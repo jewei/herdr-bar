@@ -24,3 +24,15 @@ swift run HerdrBar --check
 ```
 
 Built with SwiftUI and AppKit. No external packages.
+
+## Release
+
+Set the version in `Resources/Info.plist` and commit it. Then run:
+
+```sh
+./scripts/release.sh
+```
+
+The script runs the tests, builds the app, signs it with a Developer ID, notarizes it, and staples the ticket. It creates `dist/HerdrBar-VERSION.zip` and prints its SHA-256. It does not publish anything. The script needs a Developer ID Application identity and notary credentials in the Keychain (`xcrun notarytool store-credentials notarytool`).
+
+Publish the zip with `gh release create vVERSION dist/HerdrBar-VERSION.zip`.
