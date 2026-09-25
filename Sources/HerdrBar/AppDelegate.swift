@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var renderWindow: NSWindow?
+    private var statusPresentation: StatusPresentation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
@@ -115,18 +116,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     @objc private func showPopover() {
         guard let button = statusItem?.button else { return }
         store.selectInitialRow()
-        popover.contentSize = NSSize(width: Theme.width, height: store.paletteHeight)
+        updatePopoverSize()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
         Task { await store.refresh() }
     }
 
+    private func updatePopoverSize() {
+        let size = NSSize(width: Theme.width, height: store.paletteHeight)
+        if popover.contentSize != size { popover.contentSize = size }
+    }
+
     private func updateStatusItem() {
+        if popover.isShown { updatePopoverSize() }
         guard let button = statusItem?.button else { return }
         let summary = store.summary
-        var symbol: String
-        var tint: NSColor
+        let symbol: String
+        let tint: NSColor
         var title = ""
         if !store.connected {
             symbol = store.loading ? "ellipsis.circle" : "bolt.slash.circle"
@@ -148,6 +155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
             symbol = "circle"
             tint = .labelColor
         }
+        let text = store.connected ? (summary.description.isEmpty ? "No agents" : summary.description)
+            : store.loading ? "Connecting to Herdr" : "Herdr is offline"
+        let presentation = StatusPresentation(symbol: symbol, tint: tint, title: title, text: text)
+        guard presentation != statusPresentation else { return }
+        statusPresentation = presentation
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Herdr Bar")?
             .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))?
             .withSymbolConfiguration(.init(paletteColors: [tint]))
@@ -155,13 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         button.image = image
         button.title = title
         button.imagePosition = .imageLeading
-        let text = store.connected ? (summary.description.isEmpty ? "No agents" : summary.description)
-            : store.loading ? "Connecting to Herdr" : "Herdr is offline"
         button.toolTip = "Herdr Bar · \(text)"
         button.setAccessibilityLabel("Herdr Bar. \(text). Show agents.")
-        if popover.isShown {
-            popover.contentSize = NSSize(width: Theme.width, height: store.paletteHeight)
-        }
     }
 
     private func editConnection() {
@@ -187,11 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
-        let paneID = response.notification.request.content.userInfo["paneID"] as? String
+        let target = NotificationTarget(userInfo: response.notification.request.content.userInfo)
         Task { @MainActor [weak self] in
             guard let self else { return }
             await store.refresh()
-            if let row = store.rows.first(where: { $0.id == paneID }) { store.open(row) }
+            if let target, let row = store.row(for: target) { store.open(row) }
             else { showPopover() }
         }
         completionHandler()
@@ -201,6 +208,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
+    }
+
+    /// The menu bar item's current content. The item changes only when this value changes.
+    private struct StatusPresentation: Equatable {
+        let symbol: String
+        let tint: NSColor
+        let title: String
+        let text: String
     }
 
     private func argument(_ name: String, in arguments: [String]) -> String? {

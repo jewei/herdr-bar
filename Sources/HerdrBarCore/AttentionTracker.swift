@@ -3,6 +3,8 @@ import Foundation
 /// Remembers work completed while this app is running. Herdr also reports its own `done` state.
 public struct AttentionTracker: Sendable {
     private var previous: [String: AgentInfo] = [:]
+    /// The last status from a snapshot or an event. Events show short work between two snapshots.
+    private var statuses: [String: AgentStatus] = [:]
     private var completed: Set<String> = []
     private var acknowledged: [String: UInt64] = [:]
 
@@ -13,6 +15,12 @@ public struct AttentionTracker: Sendable {
         if row.info.agentStatus == .done {
             acknowledged[row.id] = row.info.stateChangeSeq ?? 0
         }
+    }
+
+    /// Records a status change that Herdr sent as an event.
+    public mutating func observe(paneID: String, status: AgentStatus) {
+        record(paneID, from: statuses[paneID], to: status)
+        statuses[paneID] = status
     }
 
     public mutating func update(_ snapshot: SessionSnapshot) -> [AgentRow] {
@@ -34,13 +42,7 @@ public struct AttentionTracker: Sendable {
                 completed.remove(info.paneID)
                 acknowledged.removeValue(forKey: info.paneID)
             }
-            if sameAgent, old?.agentStatus == .working, info.agentStatus == .idle {
-                completed.insert(info.paneID)
-            }
-            if info.agentStatus == .working || info.agentStatus == .blocked || info.agentStatus == .unknown {
-                completed.remove(info.paneID)
-                acknowledged.removeValue(forKey: info.paneID)
-            }
+            record(info.paneID, from: sameAgent ? statuses[info.paneID] : nil, to: info.agentStatus)
             var status = info.agentStatus
             if status == .idle, completed.contains(info.paneID) { status = .done }
             if status == .done, acknowledged[info.paneID] == (info.stateChangeSeq ?? 0) {
@@ -58,6 +60,17 @@ public struct AttentionTracker: Sendable {
         }
         previous = Dictionary(snapshot.agents.map { ($0.paneID, $0) },
                               uniquingKeysWith: { first, _ in first })
+        statuses = previous.mapValues(\.agentStatus)
         return rows
+    }
+
+    private mutating func record(_ paneID: String, from old: AgentStatus?, to new: AgentStatus) {
+        if old == .working, new == .idle { completed.insert(paneID) }
+        // A change into `done` is a new completion, also when Herdr does not send a sequence.
+        let newCompletion = new == .done && old != .done
+        if newCompletion || new == .working || new == .blocked || new == .unknown {
+            completed.remove(paneID)
+            acknowledged.removeValue(forKey: paneID)
+        }
     }
 }

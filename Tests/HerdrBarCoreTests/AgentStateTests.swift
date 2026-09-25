@@ -64,6 +64,73 @@ import Testing
     #expect(tracker.update(try snapshot(status: "done", sequence: 12)).first?.status == .done)
 }
 
+@Test func anOpenedRowMatchesOnlyTheSameCompletion() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    let opened = try #require(tracker.update(try snapshot(status: "idle", sequence: 2)).first)
+    #expect(opened.hasSameState(as: opened))
+    // The agent starts and finishes new work while the focus request waits.
+    _ = tracker.update(try snapshot(status: "working", sequence: 3))
+    let newer = try #require(tracker.update(try snapshot(status: "idle", sequence: 4)).first)
+    #expect(newer.status == .done)
+    #expect(!newer.hasSameState(as: opened))
+}
+
+@Test func anOpenedRowDoesNotMatchAReplacementAgent() throws {
+    var tracker = AttentionTracker()
+    let opened = try #require(tracker.update(try snapshot(status: "done", sequence: 5)).first)
+    let replacement = try #require(tracker.update(try snapshot(status: "done", sequence: 5, session: "second")).first)
+    #expect(!replacement.hasSameState(as: opened))
+}
+
+@Test func eventsShowWorkThatEndsBetweenTwoSnapshots() throws {
+    var tracker = AttentionTracker()
+    let idle = try snapshot(status: "idle", sequence: 1)
+    _ = tracker.update(idle)
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let row = try #require(tracker.update(try snapshot(status: "idle", sequence: 3)).first)
+    #expect(row.status == .done)
+    tracker.acknowledge(row)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 3)).first?.status == .idle)
+}
+
+@Test func eventsThatEndBlockedDoNotCountAsCompletion() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "idle"))
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .blocked)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    #expect(tracker.update(try snapshot(status: "idle")).first?.status == .idle)
+}
+
+@Test func clientCommandLinesResolveTheirSessionSocket() {
+    let home = URL(fileURLWithPath: "/Users/test")
+    let main = "/Users/test/.config/herdr/herdr.sock"
+    let work = "/Users/test/.config/herdr/sessions/work/herdr.sock"
+    #expect(ClientProcess.socketPath(arguments: ["herdr"], environment: [:], home: home) == main)
+    #expect(ClientProcess.socketPath(arguments: ["herdr", "--session", "work"], environment: [:], home: home) == work)
+    #expect(ClientProcess.socketPath(arguments: ["herdr", "--session=work"], environment: [:], home: home) == work)
+    #expect(ClientProcess.socketPath(arguments: ["herdr", "session", "attach", "work"], environment: [:],
+                                     home: home) == work)
+    #expect(ClientProcess.socketPath(arguments: ["herdr"], environment: ["HERDR_SESSION": "work"], home: home) == work)
+    #expect(ClientProcess.socketPath(arguments: ["herdr"], environment: ["HERDR_SOCKET_PATH": "/tmp/x.sock"],
+                                     home: home) == main)
+    #expect(ClientProcess.socketPath(arguments: ["herdr", "server"], environment: [:], home: home) == nil)
+    #expect(ClientProcess.socketPath(arguments: ["herdr", "agent", "list"], environment: [:], home: home) == nil)
+}
+
+@Test func aLaterDoneStateWithoutASequenceIsNotHidden() throws {
+    // Herdr can omit `state_change_seq`. Then an acknowledgement cannot compare sequences.
+    var tracker = AttentionTracker()
+    let done = try snapshot(status: "done", sequence: nil)
+    tracker.acknowledge(try #require(tracker.update(done).first))
+    #expect(tracker.update(done).first?.status == .idle)
+    _ = tracker.update(try snapshot(status: "idle", sequence: nil))
+    #expect(tracker.update(done).first?.status == .done)
+}
+
 @Test func closingAPaneRemovesItsAttentionState() throws {
     var tracker = AttentionTracker()
     _ = tracker.update(try snapshot(status: "working"))
@@ -112,14 +179,15 @@ import Testing
             == "/tmp/config/herdr.sock")
 }
 
-private func snapshot(status: String, terminal: String = "term1", sequence: UInt64 = 0,
+private func snapshot(status: String, terminal: String = "term1", sequence: UInt64? = 0,
                       focused: Bool = false, session: String = "session1") throws -> SessionSnapshot {
+    var agent: [String: Any] = ["pane_id": "w1:p1", "terminal_id": terminal, "workspace_id": "w1",
+                                "tab_id": "w1:t1", "agent": "codex", "agent_status": status,
+                                "agent_session": ["kind": "id", "value": session], "focused": focused]
+    agent["state_change_seq"] = sequence
     let json: [String: Any] = [
         "version": "0.9.1",
-        "agents": [["pane_id": "w1:p1", "terminal_id": terminal, "workspace_id": "w1",
-                    "tab_id": "w1:t1", "agent": "codex", "agent_status": status,
-                    "agent_session": ["kind": "id", "value": session],
-                    "state_change_seq": sequence, "focused": focused]],
+        "agents": [agent],
         "workspaces": [["workspace_id": "w1", "label": "remakan", "number": 1]],
         "tabs": [["tab_id": "w1:t1", "label": "orchestrator", "number": 1]],
     ]

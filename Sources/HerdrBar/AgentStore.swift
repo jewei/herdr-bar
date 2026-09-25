@@ -14,31 +14,46 @@ final class AgentStore: ObservableObject {
     @Published var openingID: String?
     @Published var selectedID: String?
     @Published var order: AgentOrder {
-        didSet { UserDefaults.standard.set(order.rawValue, forKey: "agentOrder") }
+        didSet { defaults.set(order.rawValue, forKey: "agentOrder") }
     }
     @Published var notificationsEnabled: Bool
     @Published private(set) var startsAtLogin = false
     @Published var terminalID: String {
-        didSet { UserDefaults.standard.set(terminalID, forKey: "terminalID") }
+        didSet { defaults.set(terminalID, forKey: "terminalID") }
     }
 
-    private(set) var client: HerdrClient
+    private(set) var client: any HerdrService
+    private let makeClient: (String) -> any HerdrService
+    private let defaults: UserDefaults
     private var tracker = AttentionTracker()
     private var pollTask: Task<Void, Never>?
-    private var refreshing = false
+    private var refreshingGeneration: Int?
     private var hasSnapshot = false
     private var connectionGeneration = 0
+    private var eventTask: Task<Void, Never>?
+    private var eventPanes: Set<String>?
+    private var eventStreamID = 0
+    private var eventsLive = false
+    private var eventSerial = 0
+    private var eventRetry = ContinuousClock.now
+    private var lastRefresh = ContinuousClock.now
     var onChange: (() -> Void)?
     var onOpen: (() -> Void)?
     var isPreview = false
+    /// Brings the terminal to the front after Herdr focuses a pane.
+    var activateTerminal: (_ preferred: String, _ socketPath: String) async throws -> Void = {
+        try await TerminalActivator.activate(preferred: $0, socketPath: $1)
+    }
 
-    init(client: HerdrClient? = nil) {
-        let defaults = UserDefaults.standard
+    init(client: (any HerdrService)? = nil, defaults: UserDefaults = .standard,
+         makeClient: @escaping (String) -> any HerdrService = { HerdrClient(socketPath: $0) }) {
+        self.defaults = defaults
+        self.makeClient = makeClient
         order = AgentOrder(rawValue: defaults.string(forKey: "agentOrder") ?? "") ?? .grouped
         notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
         terminalID = defaults.string(forKey: "terminalID") ?? "auto"
         let path = defaults.string(forKey: "socketPath").flatMap { $0.isEmpty ? nil : $0 }
-        self.client = client ?? HerdrClient(socketPath: path ?? SocketLocation.resolve())
+        self.client = client ?? makeClient(path ?? SocketLocation.resolve())
         startsAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -54,29 +69,52 @@ final class AgentStore: ObservableObject {
         guard pollTask == nil, !isPreview else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
+                // Events report status changes at once. Then a slow poll only updates titles.
+                if let self, !eventsLive || .now - lastRefresh >= .seconds(15) { await refresh() }
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { return }
             }
         }
     }
 
-    func stop() { pollTask?.cancel(); pollTask = nil }
+    func stop() {
+        pollTask?.cancel()
+        pollTask = nil
+        stopEvents()
+    }
 
     func refresh() async {
-        guard !refreshing, !isPreview else { return }
-        refreshing = true
+        // A request for an old connection must not delay the first request for a new one.
+        guard refreshingGeneration != connectionGeneration, !isPreview else { return }
         let generation = connectionGeneration
-        defer { refreshing = false }
+        refreshingGeneration = generation
+        lastRefresh = .now
+        defer { if refreshingGeneration == generation { refreshingGeneration = nil } }
+        var discarded = 0
         do {
-            let snapshot = try await client.snapshot()
-            guard generation == connectionGeneration, !Task.isCancelled else { return }
-            apply(snapshot)
+            while true {
+                let serial = eventSerial
+                let snapshot = try await client.snapshot()
+                guard generation == connectionGeneration, !Task.isCancelled else { return }
+                // An event during the request makes this snapshot older than the tracker state.
+                // An old snapshot can hide a completion for a moment, so request a new one.
+                if serial != eventSerial, discarded < 3 {
+                    discarded += 1
+                    continue
+                }
+                apply(snapshot)
+                if pollTask != nil { syncEvents() }
+                if serial != eventSerial { Task { await refresh() } }
+                return
+            }
         } catch {
             guard generation == connectionGeneration, !Task.isCancelled else { return }
+            stopEvents()
+            let message = error.localizedDescription
+            guard connected || loading || connectionError != message else { return }
             connected = false
             loading = false
-            connectionError = error.localizedDescription
+            connectionError = message
             onChange?()
         }
     }
@@ -92,18 +130,22 @@ final class AgentStore: ObservableObject {
                 }
             }
         }
-        rows = updated
         hasSnapshot = true
-        connected = true
-        loading = false
-        connectionError = nil
+        // Each assignment to a published property updates SwiftUI, so assign only changed values.
+        let rowsChanged = rows != updated
+        let changed = rowsChanged || !connected || loading || connectionError != nil
+        if rowsChanged { rows = updated }
+        if !connected { connected = true }
+        if loading { loading = false }
+        if connectionError != nil { connectionError = nil }
         if !rows.contains(where: { $0.id == selectedID }) { selectInitialRow() }
-        onChange?()
+        if changed { onChange?() }
     }
 
     func selectInitialRow() {
-        selectedID = sortedRows.first(where: { $0.status.needsAttention })?.id
+        let id = sortedRows.first(where: { $0.status.needsAttention })?.id
             ?? rows.first(where: { $0.info.focused })?.id ?? sortedRows.first?.id
+        if selectedID != id { selectedID = id }
     }
 
     func moveSelection(by offset: Int) {
@@ -120,21 +162,29 @@ final class AgentStore: ObservableObject {
 
     func open(_ row: AgentRow) {
         guard connected, openingID == nil, !isPreview else { return }
+        let generation = connectionGeneration
+        let client = client
         openingID = row.id
         selectedID = row.id
         actionError = nil
         Task {
-            defer { openingID = nil; onChange?() }
+            // After a connection change, this action must not change the new connection's state.
+            defer {
+                if generation == connectionGeneration { openingID = nil; onChange?() }
+            }
             do {
                 try await client.focus(paneID: row.id)
-                try await TerminalActivator.activate(preferred: terminalID)
-                tracker.acknowledge(row)
-                if let index = rows.firstIndex(where: { $0.id == row.id }), rows[index].status == .done {
-                    rows[index].status = .idle
+                guard generation == connectionGeneration else { return }
+                try await activateTerminal(terminalID, client.socketPath)
+                // The agent can start new work while focus is pending. Keep a newer completion visible.
+                if let index = rows.firstIndex(where: { $0.id == row.id }), rows[index].hasSameState(as: row) {
+                    tracker.acknowledge(rows[index])
+                    if rows[index].status == .done { rows[index].status = .idle }
                 }
                 onOpen?()
                 await refresh()
             } catch {
+                guard generation == connectionGeneration else { return }
                 actionError = error.localizedDescription
             }
         }
@@ -151,7 +201,7 @@ final class AgentStore: ObservableObject {
     func setNotifications(_ enabled: Bool) {
         if !enabled {
             notificationsEnabled = false
-            UserDefaults.standard.set(false, forKey: "notificationsEnabled")
+            defaults.set(false, forKey: "notificationsEnabled")
             return
         }
         Task {
@@ -159,7 +209,7 @@ final class AgentStore: ObservableObject {
                 let granted = try await UNUserNotificationCenter.current()
                     .requestAuthorization(options: [.alert, .sound])
                 notificationsEnabled = granted
-                UserDefaults.standard.set(granted, forKey: "notificationsEnabled")
+                defaults.set(granted, forKey: "notificationsEnabled")
                 if !granted {
                     actionError = "Allow Herdr Bar in System Settings > Notifications."
                 }
@@ -183,9 +233,10 @@ final class AgentStore: ObservableObject {
     func setSocketPath(_ path: String) {
         let value = path.trimmingCharacters(in: .whitespacesAndNewlines)
         let expanded = (value as NSString).expandingTildeInPath
-        UserDefaults.standard.set(expanded, forKey: "socketPath")
+        defaults.set(expanded, forKey: "socketPath")
         connectionGeneration += 1
-        client = HerdrClient(socketPath: expanded.isEmpty ? SocketLocation.resolve() : expanded)
+        stopEvents()
+        client = makeClient(expanded.isEmpty ? SocketLocation.resolve() : expanded)
         tracker = AttentionTracker()
         rows = []
         hasSnapshot = false
@@ -193,8 +244,62 @@ final class AgentStore: ObservableObject {
         connected = false
         connectionError = nil
         actionError = nil
+        openingID = nil
+        if notificationsEnabled {
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        }
         onChange?()
         Task { await refresh() }
+    }
+
+    /// Keeps one event subscription for the agents in the current snapshot.
+    /// If the subscription fails, polling continues and the store tries again later.
+    private func syncEvents() {
+        let panes = Set(rows.map(\.id))
+        if let eventPanes {
+            guard eventPanes != panes else { return }
+        } else {
+            guard ContinuousClock.now >= eventRetry else { return }
+        }
+        stopEvents()
+        let id = eventStreamID
+        let stream = client.events(paneIDs: panes.sorted())
+        eventPanes = panes
+        eventTask = Task { [weak self] in
+            do {
+                for try await event in stream {
+                    guard let self, id == eventStreamID else { return }
+                    handle(event)
+                }
+            } catch {}
+            guard let self, id == eventStreamID else { return }
+            eventRetry = .now + .seconds(10)
+            stopEvents()
+        }
+    }
+
+    private func stopEvents() {
+        eventStreamID += 1
+        eventTask?.cancel()
+        eventTask = nil
+        eventPanes = nil
+        eventsLive = false
+    }
+
+    private func handle(_ event: HerdrEvent) {
+        switch event {
+        case .subscribed: eventsLive = true
+        case .agentStatus(let paneID, let status): tracker.observe(paneID: paneID, status: status)
+        case .layoutChanged: break
+        }
+        eventSerial += 1
+        Task { await refresh() }
+    }
+
+    /// Finds the agent that a notification describes. Returns nil for another connection or agent.
+    func row(for target: NotificationTarget) -> AgentRow? {
+        guard target.socketPath == socketPath else { return nil }
+        return rows.first { $0.id == target.paneID && $0.info.terminalID == target.terminalID }
     }
 
     private func notify(_ row: AgentRow) {
@@ -202,9 +307,35 @@ final class AgentStore: ObservableObject {
         content.title = row.status == .blocked ? "\(row.workspace) needs input" : "\(row.workspace) finished"
         content.body = "\(row.kind) · \(row.tab). Click to open the agent."
         content.sound = .default
-        content.userInfo = ["paneID": row.id]
+        content.userInfo = NotificationTarget(row: row, socketPath: socketPath).userInfo
         let request = UNNotificationRequest(identifier: "agent-\(row.id)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { _ in }
+    }
+}
+
+/// Identifies the connection and the agent that sent a notification.
+struct NotificationTarget: Sendable {
+    let socketPath: String
+    let paneID: String
+    let terminalID: String
+
+    init(row: AgentRow, socketPath: String) {
+        self.socketPath = socketPath
+        paneID = row.id
+        terminalID = row.info.terminalID
+    }
+
+    init?(userInfo: [AnyHashable: Any]) {
+        guard let socketPath = userInfo["socketPath"] as? String,
+              let paneID = userInfo["paneID"] as? String,
+              let terminalID = userInfo["terminalID"] as? String else { return nil }
+        self.socketPath = socketPath
+        self.paneID = paneID
+        self.terminalID = terminalID
+    }
+
+    var userInfo: [String: String] {
+        ["socketPath": socketPath, "paneID": paneID, "terminalID": terminalID]
     }
 }
 
@@ -219,7 +350,14 @@ enum TerminalActivator {
         ("dev.warp.Warp-Stable", "Warp"),
     ]
 
-    static func activate(preferred: String) async throws {
+    static func activate(preferred: String, socketPath: String) async throws {
+        if preferred == "auto", let app = hostingApplication(socketPath: socketPath) {
+            guard app.activate(options: []) else {
+                throw HerdrError.server("Cannot bring the terminal to the front.")
+            }
+            return
+        }
+        // Without a known client, for example in tmux or over SSH, use the first running terminal.
         let candidates = preferred == "auto" ? choices.dropFirst().map(\.0) : [preferred]
         let running = NSWorkspace.shared.runningApplications
         for id in candidates {
@@ -231,5 +369,20 @@ enum TerminalActivator {
             }
         }
         throw HerdrError.server("Open Herdr in your terminal, then select the agent again.")
+    }
+
+    /// Returns the application that runs a Herdr client for this socket.
+    /// The first regular application among a client's parent processes is its terminal.
+    static func hostingApplication(socketPath: String) -> NSRunningApplication? {
+        for client in ClientProcess.find(socketPath: socketPath) {
+            var pid = ClientProcess.parent(of: client)
+            while let current = pid {
+                if let app = NSRunningApplication(processIdentifier: current), app.activationPolicy == .regular {
+                    return app
+                }
+                pid = ClientProcess.parent(of: current)
+            }
+        }
+        return nil
     }
 }
