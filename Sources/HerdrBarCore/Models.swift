@@ -101,6 +101,15 @@ public struct AgentRow: Identifiable, Equatable, Sendable {
     public var title: String { "\(workspace) · \(tab)" }
     public var detail: String { info.title ?? info.terminalTitleStripped ?? info.cwd ?? title }
 
+    /// True when both rows show the same agent in the same reported state.
+    /// A pane can get a new agent or a new completion while an action waits.
+    public func hasSameState(as other: AgentRow) -> Bool {
+        id == other.id && status == other.status
+            && info.terminalID == other.info.terminalID && info.agent == other.info.agent
+            && info.agentSession == other.info.agentSession
+            && info.stateChangeSeq == other.info.stateChangeSeq
+    }
+
     public init(info: AgentInfo, workspace: String, tab: String,
                 workspaceOrder: Int, tabOrder: Int, status: AgentStatus) {
         self.info = info

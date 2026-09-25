@@ -4,7 +4,7 @@ A native macOS menu bar app for [Herdr](https://herdr.dev). See which agents are
 
 ![Herdr Bar agent status palette](docs/palette.png)
 
-The app updates every two seconds. Use Settings to enable notifications, start at login, or choose your terminal.
+The app subscribes to Herdr events, so it shows each status change immediately. If events are not available, the app checks every two seconds. Use Settings to enable notifications, start at login, or choose your terminal. With the Automatic setting, the app opens the terminal that runs your Herdr session.
 
 ## Build and run
 

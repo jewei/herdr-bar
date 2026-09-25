@@ -12,5 +12,6 @@ let package = Package(
         .target(name: "HerdrBarCore"),
         .executableTarget(name: "HerdrBar", dependencies: ["HerdrBarCore"]),
         .testTarget(name: "HerdrBarCoreTests", dependencies: ["HerdrBarCore"]),
+        .testTarget(name: "HerdrBarTests", dependencies: ["HerdrBar"]),
     ]
 )
