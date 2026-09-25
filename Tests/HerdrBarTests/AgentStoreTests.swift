@@ -106,9 +106,13 @@ import Testing
     store.apply(try snapshot([agent(status: "done", seq: 1)]))
     let row = try #require(store.rows.first)
     let target = try #require(NotificationTarget(
-        userInfo: NotificationTarget(row: row, socketPath: store.socketPath).userInfo))
+        userInfo: NotificationTarget(row: row, socketPath: store.socketPath, scope: store.notificationScope).userInfo))
     #expect(store.row(for: target) == row)
-    #expect(store.row(for: NotificationTarget(row: row, socketPath: "/tmp/other.sock")) == nil)
+    #expect(store.row(for: NotificationTarget(row: row, socketPath: "/tmp/other.sock", scope: store.notificationScope)) == nil)
+    store.apply(try snapshot([agent("w2:p1", status: "done", seq: 1)]))
+    #expect(store.row(for: target)?.id == "w2:p1")
+    store.apply(try snapshot([agent("w2:p1", status: "done", seq: 1, session: "replacement")]))
+    #expect(store.row(for: target) == nil)
 
     store.apply(try snapshot([agent(status: "done", seq: 2, terminal: "replacement")]))
     #expect(store.row(for: target) == nil)
@@ -153,7 +157,7 @@ import Testing
     // Herdr made this snapshot before the agent became idle.
     fake.answerSnapshot(try snapshot([agent(status: "working", seq: 2)]))
     await eventually { fake.pendingSnapshots == 1 }
-    #expect(store.rows.first?.status == .idle)
+    #expect(store.rows.first?.status == .done)
     fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 3)]))
     await eventually { store.rows.first?.status == .done }
 }
@@ -166,20 +170,286 @@ import Testing
 
     fake.send(.layoutChanged)
     await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 1),
-                                                     agent("w1:p2", status: "idle", seq: 2)]))
+                                                     agent("w1:p2", status: "idle", seq: 2, terminal: "term2")]))
     await eventually { fake.subscriptions.count == 2 }
     #expect(fake.subscriptions.last == ["w1:p1", "w1:p2"])
     #expect(fake.closedStreams == 1)
 }
 
+@MainActor
+@Test func fourConsecutiveStaleSnapshotsCannotEraseCompletion() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    Task { await store.refresh() }
+    for index in 1...4 {
+        await eventually { fake.pendingSnapshots == 1 }
+        fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+        fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+        await settle()
+        fake.answerSnapshot(try snapshot([agent(status: "blocked", seq: UInt64(index))]))
+        await settle()
+        #expect(store.rows.first?.status == .done)
+    }
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 10)]))
+    await settle()
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func repeatedTopologyInvalidationsNeverInstallStaleMembership() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    store.apply(try snapshot([agent(status: "done", seq: 2)]))
+    Task { await store.refresh() }
+    for _ in 1...4 {
+        await eventually { fake.pendingSnapshots == 1 }
+        fake.send(.layoutChanged)
+        await settle()
+        fake.answerSnapshot(try snapshot([]))
+        await settle()
+        #expect(store.rows.first?.status == .done)
+    }
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(try snapshot([agent("w2:p1", status: "idle", seq: 2)]))
+    await eventually { store.rows.first?.id == "w2:p1" }
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func openingWithoutSequencesKeepsNewerCompletionVisible() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    store.apply(try snapshot([agent(status: "working", seq: nil)]))
+    store.apply(try snapshot([agent(status: "idle", seq: nil)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    store.apply(try snapshot([agent(status: "working", seq: nil)]))
+    store.apply(try snapshot([agent(status: "idle", seq: nil)]))
+    fake.answerFocus()
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: nil)]))
+    await eventually { store.openingID == nil }
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func notificationOccurrencesSurviveMovesAndDistinguishSessions() throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    var delivered: [AgentRow] = []
+    store.deliverNotification = { row, _, _ in delivered.append(row) }
+    store.notificationsEnabled = true
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    #expect(delivered.isEmpty) // Startup is not a new completion.
+    store.apply(try snapshot([agent(status: "done", seq: 2)]))
+    store.apply(try snapshot([agent("w2:p1", status: "done", seq: 2)]))
+    #expect(delivered.count == 1)
+    store.apply(try snapshot([agent("w2:p1", status: "done", seq: 2, session: "replacement")]))
+    #expect(delivered.count == 2)
+}
+
+@MainActor
+@Test func everyObservedCompletionNotifiesEvenBetweenSnapshots() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    var delivered: [AgentRow] = []
+    store.deliverNotification = { row, _, _ in delivered.append(row) }
+    store.notificationsEnabled = true
+    for _ in 0..<2 {
+        fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+        fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    }
+    await eventually { delivered.count == 2 }
+    #expect(delivered[0].stateGeneration != delivered[1].stateGeneration)
+    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 5)]))
+    #expect(delivered.count == 2)
+}
+
+@MainActor
+@Test func failedEventStreamExposesPollingDiagnostics() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    #expect(store.transportMode == "Live")
+    fake.failStream()
+    await eventually { store.transportMode == "Polling" }
+    #expect(store.lastEventError != nil)
+    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 1)]))
+    #expect(store.connected)
+    #expect(store.lastSuccessfulRefresh != nil)
+}
+
+@MainActor
+@Test func ambiguousPaneEventsCannotCompleteTheMovedAgentsWork() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.send(.layoutChanged)
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    await answerSnapshots(fake, with: try snapshot([
+        agent("w2:p1", status: "idle", seq: 1),
+        agent("w1:p1", status: "idle", seq: 3, terminal: "replacement"),
+    ]))
+    #expect(store.rows.allSatisfy { $0.status == .idle })
+}
+
+@MainActor
+@Test func focusAtAnOldAddressDoesNotAcknowledgeTheMovedAgent() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    let moved = try snapshot([agent("w2:p1", status: "done", seq: 1),
+                              agent("w1:p1", status: "idle", seq: 1, terminal: "replacement")])
+    store.apply(moved)
+    fake.answerFocus()
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(moved)
+    await eventually { store.openingID == nil }
+    #expect(store.rows.first(where: { $0.id == "w2:p1" })?.status == .done)
+}
+
+@MainActor
+@Test func connectionChangeDuringTerminalActivationCannotAcknowledgeNewConnection() async throws {
+    let (store, fake, clients) = makeStore()
+    defer { store.stop(); fake.close(); clients.all.forEach { $0.close() } }
+    var activation: CheckedContinuation<Void, Never>?
+    store.activateTerminal = { _, _ in
+        await withCheckedContinuation { activation = $0 }
+    }
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    fake.answerFocus()
+    await eventually { activation != nil }
+    store.setSocketPath("/tmp/second.sock")
+    let second = try #require(clients.all.last)
+    await eventually { second.pendingSnapshots == 1 }
+    second.answerSnapshot(try snapshot([agent(status: "done", seq: 1)]))
+    await eventually { store.connected }
+    activation?.resume()
+    await settle()
+    #expect(store.rows.first?.status == .done)
+    #expect(second.pendingSnapshots == 0)
+}
+
+@MainActor
+@Test func timedOutHandshakeRetriesEvenWhenPaneSetDoesNotChange() async throws {
+    let (store, fake, _) = makeStore(eventRetryDelay: .zero)
+    defer { store.stop(); fake.close() }
+    let idle = try snapshot([agent(status: "idle", seq: 1)])
+    store.start()
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(idle)
+    await eventually { fake.subscriptions.count == 1 }
+    // The transport's handshake deadline fails the stream without ever yielding subscribed.
+    fake.failStream()
+    await eventually { store.lastEventError != nil }
+    #expect(store.transportMode == "Polling")
+    await answerSnapshots(fake, with: idle)
+    await eventually { fake.subscriptions.count == 2 }
+    fake.send(.subscribed)
+    await answerSnapshots(fake, with: idle)
+    #expect(store.transportMode == "Live")
+    #expect(store.lastEventError == nil)
+}
+
+@MainActor
+@Test func quarantinedStatusTrafficAllowsRecoveryAndDoesNotHideNewWork() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .done))
+    await eventually { store.rows.first?.status == .done }
+    store.markDoneAsRead()
+    fake.send(.layoutChanged)
+    await eventually { fake.pendingSnapshots == 1 }
+    // Same membership; no resubscription will mark a gap on our behalf.
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .done))
+    await settle()
+    fake.answerSnapshot(try snapshot([agent(status: "done", seq: 5)]))
+    await eventually { store.rows.first?.status == .done }
+    // Quarantined status changes must not invalidate this recovery snapshot.
+    #expect(store.rows.first?.info.stateChangeSeq == 5)
+    #expect(fake.subscriptions.count == 1)
+    await answerSnapshots(fake, with: try snapshot([agent(status: "done", seq: 5)]))
+}
+
+@MainActor
+@Test func malformedEventFailureFallsBackAndRecoversWithTheSamePanes() async throws {
+    let (store, fake, _) = makeStore(eventRetryDelay: .zero)
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.failStream(error: .invalidResponse)
+    await eventually { store.lastEventError != nil }
+    #expect(store.transportMode == "Polling")
+    #expect(store.connected)
+    #expect(store.lastEventError == HerdrError.invalidResponse.localizedDescription)
+    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 1)]))
+    await eventually { fake.subscriptions.count == 2 }
+    fake.send(.subscribed)
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 3)]))
+    #expect(store.transportMode == "Live")
+    #expect(store.lastEventError == nil)
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func failedTerminalActivationDoesNotAcknowledgeCompletion() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    store.activateTerminal = { _, _ in throw HerdrError.server("Terminal unavailable") }
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    fake.answerFocus()
+    await eventually { store.openingID == nil }
+    #expect(store.actionError == "Terminal unavailable")
+    #expect(store.rows.first?.status == .done)
+    #expect(fake.pendingSnapshots == 0)
+}
+
+@MainActor
+@Test func stoppingTheStoreCancelsPendingTerminalDiscovery() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    var started = false
+    var cancelled = false
+    store.activateTerminal = { _, _ in
+        started = true
+        do { try await Task.sleep(for: .seconds(5)) }
+        catch { cancelled = true; throw error }
+    }
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    fake.answerFocus()
+    await eventually { started }
+    store.stop()
+    await eventually { cancelled && store.openingID == nil }
+    #expect(store.actionError == nil)
+    #expect(store.rows.first?.status == .done)
+    #expect(fake.pendingSnapshots == 0)
+}
+
 // MARK: - Helpers
 
 @MainActor
-private func makeStore() -> (AgentStore, FakeHerdr, Clients) {
+private func makeStore(eventRetryDelay: Duration = .seconds(10)) -> (AgentStore, FakeHerdr, Clients) {
     let fake = FakeHerdr(socketPath: "/tmp/first.sock")
     let clients = Clients()
     let defaults = UserDefaults(suiteName: "herdr-bar-tests-\(UUID().uuidString)")!
-    let store = AgentStore(client: fake, defaults: defaults) { path in
+    let store = AgentStore(client: fake, defaults: defaults, eventRetryDelay: eventRetryDelay) { path in
         let client = FakeHerdr(socketPath: path)
         clients.all.append(client)
         return client
@@ -225,11 +495,12 @@ private func settle() async {
     try? await Task.sleep(for: .milliseconds(30))
 }
 
-private func agent(_ pane: String = "w1:p1", status: String, seq: UInt64,
-                   terminal: String = "term1") -> [String: Any] {
-    ["pane_id": pane, "terminal_id": terminal, "workspace_id": "w1", "tab_id": "w1:t1",
-     "agent": "claude", "agent_status": status, "agent_session": ["kind": "id", "value": "session1"],
-     "state_change_seq": seq, "focused": false]
+private func agent(_ pane: String = "w1:p1", status: String, seq: UInt64?,
+                   terminal: String = "term1", session: String = "session1") -> [String: Any] {
+    var value: [String: Any] = ["pane_id": pane, "terminal_id": terminal, "workspace_id": "w1", "tab_id": "w1:t1",
+     "agent": "claude", "agent_status": status, "agent_session": ["kind": "id", "value": session], "focused": false]
+    value["state_change_seq"] = seq
+    return value
 }
 
 private func snapshot(_ agents: [[String: Any]]) throws -> SessionSnapshot {
@@ -306,6 +577,10 @@ private final class FakeHerdr: HerdrService {
 
     func send(_ event: HerdrEvent) {
         _ = state.withLock { $0.streams.last }?.yield(event)
+    }
+
+    func failStream(error: HerdrError = .timeout) {
+        state.withLock { $0.streams.last }?.finish(throwing: error)
     }
 
     /// Ends every request that is still open, so no continuation leaks after a test.

@@ -15,9 +15,12 @@ KEYCHAIN_PROFILE="${KEYCHAIN_PROFILE:-notarytool}"
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_dir"
 
-# The release must contain only committed source.
-if [[ -n "$(git status --porcelain -- Sources Resources Package.swift)" ]]; then
-    echo "Commit the changes in Sources, Resources, and Package.swift first." >&2
+# Require a clean repository, including tests, scripts, and untracked source.
+# Git's normal ignore rules keep build products (.build/, dist/, etc.) out.
+source_status="$(git status --porcelain --untracked-files=all --ignore-submodules=none)"
+if [[ -n "$source_status" ]]; then
+    echo "Commit or remove all tracked and untracked source-tree changes before releasing:" >&2
+    printf '%s\n' "$source_status" >&2
     exit 1
 fi
 

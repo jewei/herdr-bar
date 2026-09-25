@@ -31,9 +31,14 @@ public enum AgentStatus: String, Codable, Sendable, CaseIterable {
     }
 }
 
-public struct AgentSessionInfo: Decodable, Sendable, Equatable {
+public struct AgentSessionInfo: Decodable, Sendable, Hashable {
     public let kind: String
     public let value: String
+
+    public init(kind: String, value: String) {
+        self.kind = kind
+        self.value = value
+    }
 }
 
 public struct AgentInfo: Decodable, Sendable, Equatable {
@@ -88,6 +93,21 @@ public struct SessionSnapshot: Decodable, Sendable {
     public let tabs: [TabInfo]
 }
 
+/// Identity within one server connection. A public pane ID is only a routing address.
+public struct AgentIdentity: Hashable, Sendable {
+    public let terminalID: String
+    public let agent: String?
+    public let session: AgentSessionInfo?
+    private let fallbackPaneID: String?
+
+    public init(_ info: AgentInfo) {
+        terminalID = info.terminalID
+        agent = info.agent
+        session = info.agentSession
+        fallbackPaneID = info.terminalID.isEmpty ? info.paneID : nil
+    }
+}
+
 public struct AgentRow: Identifiable, Equatable, Sendable {
     public let info: AgentInfo
     public let workspace: String
@@ -95,7 +115,10 @@ public struct AgentRow: Identifiable, Equatable, Sendable {
     public let workspaceOrder: Int
     public let tabOrder: Int
     public var status: AgentStatus
+    /// Local occurrence identity, including when Herdr omits its sequence.
+    public let stateGeneration: UInt64
 
+    public var identity: AgentIdentity { AgentIdentity(info) }
     public var id: String { info.paneID }
     public var kind: String { info.displayAgent ?? info.agent ?? "agent" }
     public var title: String { "\(workspace) · \(tab)" }
@@ -104,20 +127,19 @@ public struct AgentRow: Identifiable, Equatable, Sendable {
     /// True when both rows show the same agent in the same reported state.
     /// A pane can get a new agent or a new completion while an action waits.
     public func hasSameState(as other: AgentRow) -> Bool {
-        id == other.id && status == other.status
-            && info.terminalID == other.info.terminalID && info.agent == other.info.agent
-            && info.agentSession == other.info.agentSession
-            && info.stateChangeSeq == other.info.stateChangeSeq
+        identity == other.identity && status == other.status
+            && stateGeneration == other.stateGeneration
     }
 
     public init(info: AgentInfo, workspace: String, tab: String,
-                workspaceOrder: Int, tabOrder: Int, status: AgentStatus) {
+                workspaceOrder: Int, tabOrder: Int, status: AgentStatus, stateGeneration: UInt64 = 0) {
         self.info = info
         self.workspace = workspace
         self.tab = tab
         self.workspaceOrder = workspaceOrder
         self.tabOrder = tabOrder
         self.status = status
+        self.stateGeneration = stateGeneration
     }
 }
 

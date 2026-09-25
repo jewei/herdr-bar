@@ -142,6 +142,11 @@ struct PaletteView: View {
                         .help(store.connectionError ?? "Connecting to Herdr")
                 }
                 Spacer(minLength: 0)
+                if store.connected {
+                    Text(store.transportMode)
+                        .help(store.diagnostics)
+                        .accessibilityLabel("Connection: \(store.diagnostics)")
+                }
                 settings
             }
             .font(Theme.caption)
@@ -169,7 +174,10 @@ struct PaletteView: View {
             }
             Button("Connection…", action: editConnection)
             Divider()
-            Text("Herdr Bar 1.0")
+            Text(store.transportMode)
+                .help(store.diagnostics)
+            if let error = store.lastEventError { Text("Event stream: \(error)") }
+            Text("Herdr Bar \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development")")
             Button("Quit Herdr Bar") { NSApp.terminate(nil) }
                 .keyboardShortcut("q", modifiers: .command)
         } label: {

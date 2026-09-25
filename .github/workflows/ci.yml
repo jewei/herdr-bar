@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
+      - name: Test packaging with mocked tools
+        run: bash scripts/test-packaging.sh
+      - name: Run Swift tests
+        run: swift test
+      - name: Build release configuration
+        run: swift build -c release

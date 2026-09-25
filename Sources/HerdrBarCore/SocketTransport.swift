@@ -6,6 +6,7 @@ public enum HerdrError: LocalizedError, Sendable {
     case timeout
     case invalidResponse
     case responseTooLarge
+    case streamOverflow
     case server(String)
 
     public var errorDescription: String? {
@@ -14,6 +15,7 @@ public enum HerdrError: LocalizedError, Sendable {
         case .timeout: "Herdr did not reply in time."
         case .invalidResponse: "Herdr sent an invalid response."
         case .responseTooLarge: "The Herdr response is too large."
+        case .streamOverflow: "Herdr events arrived too quickly. Reconnect and refresh the snapshot to resynchronize."
         case .server(let message): message
         }
     }
@@ -24,6 +26,8 @@ public struct SocketTransport: Sendable {
     public let path: String
     public let timeout: TimeInterval
     static let maximumLine = 8 * 1_024 * 1_024
+    // A count limit also bounds bytes, since every line is limited to maximumLine.
+    static let maximumBufferedLines = 8
     private static let queue = DispatchQueue(label: "dev.herdrbar.socket", qos: .utility,
                                              attributes: .concurrent)
 
@@ -42,12 +46,20 @@ public struct SocketTransport: Sendable {
 
     /// Sends one request on a connection that stays open, then returns each line that the server sends.
     /// The connect and the send have the usual timeout. The read has no timeout.
-    /// The connection closes when the stream ends or when the consumer stops the iteration.
+    /// The connection closes when the stream ends or its consumer is cancelled.
     public func lines(_ request: Data) -> AsyncThrowingStream<Data, any Error> {
-        AsyncThrowingStream { continuation in
-            let reader = LineReader(continuation: continuation)
+        lines(request, firstLineTimeout: nil)
+    }
+
+    /// Subscription handshakes have a deadline; subsequent quiet reads do not.
+    /// Smaller protocol-specific line limits allow more burst headroom without multiplying memory use.
+    func lines(_ request: Data, firstLineTimeout: TimeInterval?,
+               maximumLine: Int = Self.maximumLine,
+               maximumBufferedLines: Int = Self.maximumBufferedLines) -> AsyncThrowingStream<Data, any Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedLines)) { continuation in
+            let reader = LineReader(continuation: continuation, maximumLine: maximumLine)
             continuation.onTermination = { _ in reader.cancel() }
-            reader.start(transport: self, request: request)
+            reader.start(transport: self, request: request, firstLineTimeout: firstLineTimeout)
         }
     }
 
@@ -162,15 +174,18 @@ public struct SocketTransport: Sendable {
 private final class LineReader: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.herdrbar.events", qos: .utility)
     private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
+    private let maximumLine: Int
     private var source: DispatchSourceRead?
+    private var handshakeTimer: DispatchSourceTimer?
     private var cancelled = false
     private var pending = Data()
 
-    init(continuation: AsyncThrowingStream<Data, any Error>.Continuation) {
+    init(continuation: AsyncThrowingStream<Data, any Error>.Continuation, maximumLine: Int) {
         self.continuation = continuation
+        self.maximumLine = maximumLine
     }
 
-    func start(transport: SocketTransport, request: Data) {
+    func start(transport: SocketTransport, request: Data, firstLineTimeout: TimeInterval?) {
         queue.async { [self] in
             guard !cancelled else { return }
             let fd: Int32
@@ -184,6 +199,13 @@ private final class LineReader: @unchecked Sendable {
             source.setEventHandler { [weak self] in self?.read(fd, transport: transport) }
             source.setCancelHandler { close(fd) }
             self.source = source
+            if let firstLineTimeout {
+                let timer = DispatchSource.makeTimerSource(queue: queue)
+                timer.schedule(deadline: .now() + max(0.001, firstLineTimeout))
+                timer.setEventHandler { [weak self] in self?.finish(HerdrError.timeout) }
+                handshakeTimer = timer
+                timer.resume()
+            }
             source.resume()
         }
     }
@@ -191,14 +213,16 @@ private final class LineReader: @unchecked Sendable {
     func cancel() {
         queue.async { [self] in
             cancelled = true
-            source?.cancel()
-            source = nil
+            finish(nil)
         }
     }
 
     private func read(_ fd: Int32, transport: SocketTransport) {
         var buffer = [UInt8](repeating: 0, count: 16_384)
-        while source != nil {
+        // Even a continuously readable socket must yield the queue to cancellation and timers.
+        // Count attempts, not just successful reads, so EINTR cannot monopolize the queue either.
+        for _ in 0..<16 {
+            guard source != nil else { return }
             let count = recv(fd, &buffer, buffer.count, 0)
             if count < 0 {
                 if errno == EINTR { continue }
@@ -208,19 +232,35 @@ private final class LineReader: @unchecked Sendable {
             guard count > 0 else { return finish(nil) }
             var start = 0
             while let newline = buffer[start..<count].firstIndex(of: 10) {
+                guard pending.count + newline - start <= maximumLine else {
+                    return finish(HerdrError.responseTooLarge)
+                }
                 pending.append(contentsOf: buffer[start..<newline])
-                continuation.yield(pending)
+                handshakeTimer?.cancel()
+                handshakeTimer = nil
+                switch continuation.yield(pending) {
+                case .enqueued: break
+                case .dropped:
+                    // Losing a line would silently corrupt the event sequence.
+                    return finish(HerdrError.streamOverflow)
+                case .terminated:
+                    return finish(nil)
+                @unknown default:
+                    return finish(HerdrError.invalidResponse)
+                }
                 pending = Data()
                 start = newline + 1
             }
             pending.append(contentsOf: buffer[start..<count])
-            guard pending.count <= SocketTransport.maximumLine else {
+            guard pending.count <= maximumLine else {
                 return finish(HerdrError.responseTooLarge)
             }
         }
     }
 
     private func finish(_ error: (any Error)?) {
+        handshakeTimer?.cancel()
+        handshakeTimer = nil
         continuation.finish(throwing: error)
         source?.cancel()
         source = nil

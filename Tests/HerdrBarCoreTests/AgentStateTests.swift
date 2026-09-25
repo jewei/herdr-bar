@@ -131,6 +131,140 @@ import Testing
     #expect(tracker.update(done).first?.status == .done)
 }
 
+@Test func movingAPanePreservesUnreadAndAcknowledgedOccurrences() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    let done = try #require(tracker.update(try snapshot(status: "idle", sequence: 2)).first)
+    let moved = try #require(tracker.update(try snapshot(status: "idle", sequence: 2, pane: "w2:p1")).first)
+    #expect(moved.status == .done)
+    #expect(moved.hasSameState(as: done))
+    let acknowledged = tracker.acknowledge(done)
+    #expect(acknowledged)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 2, pane: "w3:p1")).first?.status == .idle)
+
+    let explicit = try #require(tracker.update(try snapshot(status: "done", sequence: 3, pane: "w3:p1")).first)
+    tracker.acknowledge(explicit)
+    #expect(tracker.update(try snapshot(status: "done", sequence: 3, pane: "w4:p1")).first?.status == .idle)
+}
+
+@Test func explicitDoneRemainsUnreadAfterAnotherClientMarksItSeen() throws {
+    var tracker = AttentionTracker()
+    let done = try #require(tracker.update(try snapshot(status: "done", sequence: 1)).first)
+    let idle = try #require(tracker.update(try snapshot(status: "idle", sequence: 1)).first)
+    #expect(idle.status == .done)
+    #expect(idle.hasSameState(as: done))
+    tracker.acknowledge(done)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 1)).first?.status == .idle)
+}
+
+@Test func missingSequencesStillDistinguishCompletionOccurrences() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: nil))
+    let first = try #require(tracker.update(try snapshot(status: "idle", sequence: nil)).first)
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let second = try #require(tracker.update(try snapshot(status: "idle", sequence: nil)).first)
+    #expect(!first.hasSameState(as: second))
+    let acknowledged = tracker.acknowledge(first)
+    #expect(!acknowledged)
+    #expect(tracker.project([second]).first?.status == .done)
+}
+
+@Test func eventOverlayNeverReplaysStaleSnapshotStatuses() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "blocked", sequence: 1))
+    for index in 1...4 {
+        tracker.observe(paneID: "w1:p1", status: .working)
+        tracker.observe(paneID: "w1:p1", status: .idle)
+        let stale = try snapshot(status: "blocked", sequence: UInt64(index))
+        #expect(tracker.update(stale, preservingObservedStateFor: ["w1:p1"]).first?.status == .done)
+    }
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 10)).first?.status == .done)
+}
+
+@Test func inferredThenExplicitCompletionIsOnlyOneOccurrence() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let inferred = try #require(tracker.update(try snapshot(status: "idle", sequence: 2)).first)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    let explicit = try #require(tracker.update(try snapshot(status: "done", sequence: 2)).first)
+    #expect(inferred.hasSameState(as: explicit))
+}
+
+@Test func aSnapshotDoesNotDoubleCountAnExplicitCompletionEvent() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "done", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    let rows = tracker.update(try snapshot(status: "done", sequence: 3), preservingObservedStateFor: ["w1:p1"])
+    let fresh = tracker.update(try snapshot(status: "done", sequence: 3))
+    #expect(rows.first?.stateGeneration == fresh.first?.stateGeneration)
+}
+
+@Test func acknowledgedInferredCompletionIsNotReopenedByExplicitConfirmation() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    let inferred = try #require(tracker.update(try snapshot(status: "idle", sequence: 2)).first)
+    tracker.acknowledge(inferred)
+    let explicit = try #require(tracker.update(try snapshot(status: "done", sequence: 2)).first)
+    #expect(explicit.status == .idle)
+    #expect(explicit.stateGeneration == inferred.stateGeneration)
+    #expect(tracker.update(try snapshot(status: "done", sequence: 4)).first?.status == .done)
+}
+
+@Test func nilSequenceDoesNotConsumeUnreconciledEventEvidence() throws {
+    var tracker = AttentionTracker()
+    let initial = tracker.update(try snapshot(status: "idle", sequence: 10))
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    let completed = try #require(tracker.project(initial).first)
+    tracker.acknowledge(completed)
+    _ = tracker.update(try snapshot(status: "done", sequence: nil))
+    let sequenced = try #require(tracker.update(try snapshot(status: "done", sequence: 12)).first)
+    #expect(sequenced.status == .idle)
+    #expect(sequenced.stateGeneration == completed.stateGeneration)
+}
+
+@Test func absentSequenceDoesNotEraseTheLastKnownWatermark() throws {
+    var tracker = AttentionTracker()
+    let done = try #require(tracker.update(try snapshot(status: "done", sequence: 10)).first)
+    tracker.acknowledge(done)
+    #expect(tracker.update(try snapshot(status: "done", sequence: nil)).first?.status == .idle)
+    #expect(tracker.update(try snapshot(status: "done", sequence: 12)).first?.status == .done)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: nil)).first?.status == .done)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 1)).first?.status == .idle)
+}
+
+@Test func repeatedBlockedSnapshotsWithNewSequencesAreDistinctOccurrences() throws {
+    var tracker = AttentionTracker()
+    let first = try #require(tracker.update(try snapshot(status: "blocked", sequence: 1)).first)
+    let next = try #require(tracker.update(try snapshot(status: "blocked", sequence: 3)).first)
+    #expect(!first.hasSameState(as: next))
+}
+
+@Test func eventGapConservativelyReannouncesAdvancedDoneSequence() throws {
+    var tracker = AttentionTracker()
+    let original = tracker.update(try snapshot(status: "idle", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    let observed = try #require(tracker.project(original).first)
+    tracker.acknowledge(observed)
+    tracker.markEventGap()
+    let recovered = try #require(tracker.update(try snapshot(status: "done", sequence: 5)).first)
+    #expect(recovered.status == .done)
+    #expect(recovered.stateGeneration != observed.stateGeneration)
+}
+
+@Test func eventOverlayBelongsToIdentityRatherThanAReusedAddress() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let moved = tracker.update(try snapshot(status: "working", sequence: 1, pane: "w2:p1"),
+                               preservingObservedStateFor: ["w1:p1"])
+    #expect(moved.first?.status == .done)
+}
+
 @Test func closingAPaneRemovesItsAttentionState() throws {
     var tracker = AttentionTracker()
     _ = tracker.update(try snapshot(status: "working"))
@@ -180,8 +314,8 @@ import Testing
 }
 
 private func snapshot(status: String, terminal: String = "term1", sequence: UInt64? = 0,
-                      focused: Bool = false, session: String = "session1") throws -> SessionSnapshot {
-    var agent: [String: Any] = ["pane_id": "w1:p1", "terminal_id": terminal, "workspace_id": "w1",
+                      focused: Bool = false, session: String = "session1", pane: String = "w1:p1") throws -> SessionSnapshot {
+    var agent: [String: Any] = ["pane_id": pane, "terminal_id": terminal, "workspace_id": "w1",
                                 "tab_id": "w1:t1", "agent": "codex", "agent_status": status,
                                 "agent_session": ["kind": "id", "value": session], "focused": focused]
     agent["state_change_seq"] = sequence

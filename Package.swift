@@ -11,7 +11,8 @@ let package = Package(
     targets: [
         .target(name: "HerdrBarCore"),
         .executableTarget(name: "HerdrBar", dependencies: ["HerdrBarCore"]),
-        .testTarget(name: "HerdrBarCoreTests", dependencies: ["HerdrBarCore"]),
+        .testTarget(name: "HerdrBarCoreTests", dependencies: ["HerdrBarCore"],
+                    resources: [.copy("Fixtures")]),
         .testTarget(name: "HerdrBarTests", dependencies: ["HerdrBar"]),
     ]
 )
