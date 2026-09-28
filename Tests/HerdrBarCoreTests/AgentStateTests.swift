@@ -23,8 +23,8 @@ import Testing
 @Test func focusedPaneCompletionStillNeedsAttention() throws {
     // Herdr's selected pane can be in a terminal that is behind another application.
     var tracker = AttentionTracker()
-    _ = tracker.update(try snapshot(status: "working", focused: true))
-    #expect(tracker.update(try snapshot(status: "idle", focused: true)).first?.status == .done)
+    _ = tracker.update(try snapshot(status: "working", sequence: 1, focused: true))
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 2, focused: true)).first?.status == .done)
 }
 
 @Test func replacementAgentCannotCompleteThePreviousAgentsWork() throws {
@@ -157,29 +157,51 @@ import Testing
     #expect(tracker.update(try snapshot(status: "idle", sequence: 1)).first?.status == .idle)
 }
 
-@Test func missingSequencesStillDistinguishCompletionOccurrences() throws {
+@Test func missingSequencesStillDistinguishAuthoritativeCompletionOccurrences() throws {
     var tracker = AttentionTracker()
     _ = tracker.update(try snapshot(status: "working", sequence: nil))
     let first = try #require(tracker.update(try snapshot(status: "idle", sequence: nil)).first)
-    tracker.observe(paneID: "w1:p1", status: .working)
-    tracker.observe(paneID: "w1:p1", status: .idle)
+    _ = tracker.update(try snapshot(status: "working", sequence: nil))
     let second = try #require(tracker.update(try snapshot(status: "idle", sequence: nil)).first)
     #expect(!first.hasSameState(as: second))
-    let acknowledged = tracker.acknowledge(first)
-    #expect(!acknowledged)
+    let accepted = tracker.acknowledge(first)
+    #expect(!accepted)
     #expect(tracker.project([second]).first?.status == .done)
 }
 
-@Test func eventOverlayNeverReplaysStaleSnapshotStatuses() throws {
+@Test func provisionalCompletionNeedsAnAdvancingSequence() throws {
+    for sequence: UInt64? in [1, nil] {
+        var tracker = AttentionTracker()
+        let initial = tracker.update(try snapshot(status: "idle", sequence: sequence))
+        tracker.observe(paneID: "w1:p1", status: .working)
+        #expect(tracker.project(initial).first?.status == .working)
+        tracker.observe(paneID: "w1:p1", status: .idle)
+        #expect(tracker.project(initial).first?.status == .idle)
+        #expect(tracker.update(try snapshot(status: "idle", sequence: sequence)).first?.status == .idle)
+        #expect(tracker.update(try snapshot(status: "idle", sequence: sequence)).first?.status == .idle)
+    }
+}
+
+@Test func repeatedOverlappingSnapshotsCannotCommitProvisionalAttention() throws {
     var tracker = AttentionTracker()
-    _ = tracker.update(try snapshot(status: "blocked", sequence: 1))
-    for index in 1...4 {
+    _ = tracker.update(try snapshot(status: "idle", sequence: 1))
+    for _ in 1...4 {
         tracker.observe(paneID: "w1:p1", status: .working)
         tracker.observe(paneID: "w1:p1", status: .idle)
-        let stale = try snapshot(status: "blocked", sequence: UInt64(index))
-        #expect(tracker.update(stale, preservingObservedStateFor: ["w1:p1"]).first?.status == .done)
+        let stale = try snapshot(status: "idle", sequence: 1)
+        #expect(tracker.update(stale, preservingObservedStateFor: ["w1:p1"]).first?.status == .idle)
     }
-    #expect(tracker.update(try snapshot(status: "idle", sequence: 10)).first?.status == .done)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 9)).first?.status == .done)
+}
+
+@Test func newerIncompatibleSnapshotBreaksProvisionalCompletionEvidence() throws {
+    var tracker = AttentionTracker()
+    _ = tracker.update(try snapshot(status: "idle", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    #expect(tracker.update(try snapshot(status: "blocked", sequence: 4),
+                           preservingObservedStateFor: ["w1:p1"]).first?.status == .blocked)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 5)).first?.status == .idle)
 }
 
 @Test func inferredThenExplicitCompletionIsOnlyOneOccurrence() throws {
@@ -213,17 +235,15 @@ import Testing
     #expect(tracker.update(try snapshot(status: "done", sequence: 4)).first?.status == .done)
 }
 
-@Test func nilSequenceDoesNotConsumeUnreconciledEventEvidence() throws {
+@Test func aSnapshotWithNoSequenceCannotValidateAnEventOnlyCompletion() throws {
     var tracker = AttentionTracker()
     let initial = tracker.update(try snapshot(status: "idle", sequence: 10))
     tracker.observe(paneID: "w1:p1", status: .working)
-    tracker.observe(paneID: "w1:p1", status: .done)
-    let completed = try #require(tracker.project(initial).first)
-    tracker.acknowledge(completed)
-    _ = tracker.update(try snapshot(status: "done", sequence: nil))
-    let sequenced = try #require(tracker.update(try snapshot(status: "done", sequence: 12)).first)
-    #expect(sequenced.status == .idle)
-    #expect(sequenced.stateGeneration == completed.stateGeneration)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    #expect(tracker.project(initial).first?.status == .idle)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: nil)).first?.status == .idle)
+    // A later sequence alone cannot reconstruct the discarded short cycle.
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 12)).first?.status == .idle)
 }
 
 @Test func absentSequenceDoesNotEraseTheLastKnownWatermark() throws {
@@ -245,10 +265,7 @@ import Testing
 
 @Test func eventGapConservativelyReannouncesAdvancedDoneSequence() throws {
     var tracker = AttentionTracker()
-    let original = tracker.update(try snapshot(status: "idle", sequence: 1))
-    tracker.observe(paneID: "w1:p1", status: .working)
-    tracker.observe(paneID: "w1:p1", status: .done)
-    let observed = try #require(tracker.project(original).first)
+    let observed = try #require(tracker.update(try snapshot(status: "done", sequence: 3)).first)
     tracker.acknowledge(observed)
     tracker.markEventGap()
     let recovered = try #require(tracker.update(try snapshot(status: "done", sequence: 5)).first)
@@ -256,13 +273,78 @@ import Testing
     #expect(recovered.stateGeneration != observed.stateGeneration)
 }
 
-@Test func eventOverlayBelongsToIdentityRatherThanAReusedAddress() throws {
+@Test func aMovedSnapshotDiscardsUnvalidatedAddressEvidence() throws {
     var tracker = AttentionTracker()
-    _ = tracker.update(try snapshot(status: "working", sequence: 1))
+    _ = tracker.update(try snapshot(status: "idle", sequence: 1))
+    tracker.observe(paneID: "w1:p1", status: .working)
     tracker.observe(paneID: "w1:p1", status: .idle)
-    let moved = tracker.update(try snapshot(status: "working", sequence: 1, pane: "w2:p1"),
-                               preservingObservedStateFor: ["w1:p1"])
-    #expect(moved.first?.status == .done)
+    let moved = try snapshot(status: "idle", sequence: 1, pane: "w2:p1")
+    #expect(tracker.update(moved, preservingObservedStateFor: ["w1:p1"]).first?.status == .idle)
+    #expect(tracker.update(moved).first?.status == .idle)
+}
+
+@Test func duplicateEventsCannotChangeCommittedOccurrenceOrBlockAcknowledgement() throws {
+    var tracker = AttentionTracker()
+    let completed = try #require(tracker.update(try snapshot(status: "done", sequence: 3)).first)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    tracker.observe(paneID: "w1:p1", status: .done)
+    #expect(tracker.project([completed]).first?.stateGeneration == completed.stateGeneration)
+    let accepted = tracker.acknowledge(completed)
+    #expect(accepted)
+    let unchanged = tracker.update(try snapshot(status: "done", sequence: 3))
+    #expect(unchanged.first?.status == .idle)
+    #expect(unchanged.first?.stateGeneration == completed.stateGeneration)
+}
+
+@Test func invalidTopologyRejectsFurtherAddressOnlyObservations() throws {
+    var tracker = AttentionTracker()
+    let initial = tracker.update(try snapshot(status: "idle", sequence: 1))
+    tracker.invalidateTopology()
+    tracker.observe(paneID: "w1:p1", status: .working)
+    #expect(tracker.project(initial).first?.status == .idle)
+    #expect(tracker.update(try snapshot(status: "idle", sequence: 2)).first?.status == .idle)
+}
+
+@Test func topologyInvalidationPreservesCommittedUnreadAndAcknowledgements() throws {
+    for acknowledged in [false, true] {
+        var tracker = AttentionTracker()
+        let completed = try #require(tracker.update(try snapshot(status: "done", sequence: 3)).first)
+        if acknowledged {
+            let accepted = tracker.acknowledge(completed)
+            #expect(accepted)
+        }
+        tracker.observe(paneID: "w1:p1", status: .working)
+        tracker.invalidateTopology()
+        let moved = tracker.update(try snapshot(status: "idle", sequence: 3, pane: "w2:p1"))
+        #expect(moved.first?.status == (acknowledged ? .idle : .done))
+        #expect(moved.first?.stateGeneration == completed.stateGeneration)
+    }
+}
+
+@Test func pendingEventsPreventAnOldAcknowledgementBeforeValidation() throws {
+    var tracker = AttentionTracker()
+    let completed = try #require(tracker.update(try snapshot(status: "done", sequence: 3)).first)
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let accepted = tracker.acknowledge(completed)
+    #expect(!accepted)
+    let newer = try #require(tracker.update(try snapshot(status: "idle", sequence: 5)).first)
+    #expect(newer.status == .done)
+    #expect(newer.stateGeneration != completed.stateGeneration)
+    let acceptedAfterValidation = tracker.acknowledge(completed)
+    #expect(!acceptedAfterValidation)
+}
+
+@Test func delayedOldEventsCannotReopenAnAcknowledgedCompletion() throws {
+    var tracker = AttentionTracker()
+    let completed = try #require(tracker.update(try snapshot(status: "done", sequence: 9)).first)
+    let accepted = tracker.acknowledge(completed)
+    #expect(accepted)
+    tracker.observe(paneID: "w1:p1", status: .working)
+    tracker.observe(paneID: "w1:p1", status: .idle)
+    let recovered = tracker.update(try snapshot(status: "idle", sequence: 9))
+    #expect(recovered.first?.status == .idle)
+    #expect(recovered.first?.stateGeneration == completed.stateGeneration)
 }
 
 @Test func closingAPaneRemovesItsAttentionState() throws {

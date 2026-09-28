@@ -32,6 +32,8 @@ jobs:
           bash scripts/test-release.sh
       - name: Run Swift tests
         run: swift test
+      - name: Run optimized Swift tests
+        run: swift test -c release
       - name: Build and validate the app bundle
         run: |
           bash scripts/build.sh

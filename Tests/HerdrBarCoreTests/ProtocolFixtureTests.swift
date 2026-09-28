@@ -74,6 +74,22 @@ import Testing
         }
     }
 
+    @Test func clientConsumesPinnedSnapshotSuccessVariant() async throws {
+        let acknowledgement = try encode(try #require(examples()["snapshot_before_move"]))
+        let server = try ProtocolFixtureSocket { requestData in
+            let request = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(request["method"] as? String == "session.snapshot")
+            var reply = try #require(JSONSerialization.jsonObject(with: acknowledgement) as? [String: Any])
+            reply["id"] = request["id"]
+            return try JSONSerialization.data(withJSONObject: reply) + Data([10])
+        }
+        defer { server.stop() }
+        let snapshot = try await HerdrClient(socketPath: server.path).snapshot()
+        #expect(snapshot.version == "0.9.1")
+        #expect(snapshot.agents.first?.paneID == "w1:p1")
+        #expect(snapshot.agents.first?.agentStatus == .blocked)
+    }
+
     @Test func additivePayloadChangesRemainCompatible() throws {
         // These mutations are forward-compatibility probes, not 0.9.1 schema examples.
         let bodies: [Any] = [NSNull(), 17, ["pane_id": 42, "agent_status": ["new": true]]]

@@ -28,7 +28,7 @@ public struct HerdrClient: HerdrService {
     }
 
     public func focus(paneID: String) async throws {
-        let _: EmptyResult = try await request("agent.focus", params: ["target": paneID])
+        let _: FocusResult = try await request("agent.focus", params: ["target": paneID])
     }
 
     /// Subscribes to agent status changes for the given panes and to layout changes.
@@ -121,9 +121,21 @@ public struct HerdrClient: HerdrService {
         let error: ErrorBody?
     }
     private struct ErrorBody: Decodable { let message: String }
-    private struct SnapshotResult: Decodable, Sendable { let snapshot: SessionSnapshot }
-    private struct EmptyResult: Decodable, Sendable {}
-    private struct StartResult: Decodable, Sendable {}
+    // A matching correlation ID is not sufficient: each method has a distinct
+    // success variant. Decoding still permits unrelated additive fields.
+    private struct SnapshotResult: Decodable, Sendable {
+        enum Kind: String, Decodable, Sendable { case snapshot = "session_snapshot" }
+        let type: Kind
+        let snapshot: SessionSnapshot
+    }
+    private struct FocusResult: Decodable, Sendable {
+        enum Kind: String, Decodable, Sendable { case ok }
+        let type: Kind
+    }
+    private struct StartResult: Decodable, Sendable {
+        enum Kind: String, Decodable, Sendable { case started = "subscription_started" }
+        let type: Kind
+    }
     private struct Subscription: Encodable {
         let type: String
         let paneID: String?

@@ -1,0 +1,35 @@
+{
+  "elapsed_seconds": 60.23052504169755,
+  "os": "Version 27.0 (Build 26A428)",
+  "processes": [
+    {
+      "cpu_percent_one_core": 0.0066150012759173295,
+      "interrupt_wakeups": 9,
+      "package_idle_wakeups": 0,
+      "pid": 18929,
+      "resident_bytes_end": 45924352,
+      "resident_bytes_sampled_peak": 50708480,
+      "resident_bytes_start": 50708480,
+      "role": "app"
+    },
+    {
+      "cpu_percent_one_core": 0.38533070759828153,
+      "interrupt_wakeups": 1087,
+      "package_idle_wakeups": 11,
+      "pid": 18897,
+      "resident_bytes_end": 18792448,
+      "resident_bytes_sampled_peak": 23298048,
+      "resident_bytes_start": 22724608,
+      "role": "server"
+    }
+  ],
+  "sample_interval_seconds": 1,
+  "requests_during_sample": {
+    "session.snapshot": 3
+  },
+  "source_commit": "a32e893a7b482bd35a383875238d42df757c2dea",
+  "agent_count": 1,
+  "popover": "closed",
+  "mode": "unbundled release client via counting proxy",
+  "herdr_version": "herdr 0.9.1"
+}

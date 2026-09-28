@@ -1,5 +1,8 @@
 # Review decisions
 
+This records the first review. The [second review decisions](second-review-decisions.md)
+update the event reconciliation and notification policy described below.
+
 The supplied ChatGPT review examined commit `534aca9`. Two fresh independent
 reviewers checked every section against that commit and local commit `db0353c`.
 Both agreed with the main assessment: keep the current package split and fix

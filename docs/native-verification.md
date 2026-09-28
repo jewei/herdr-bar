@@ -1,5 +1,22 @@
 # Native verification
 
+## Second review checks — 2026-09-28
+
+On macOS 27.0 arm64 with Swift 6.4, both `swift test` and
+`swift test -c release` passed 116 tests: 37 store tests and 79 core tests.
+The new cases cover delayed topology notices, independently advancing subscription
+cursors and snapshots, stale event cycles, provisional notification suppression,
+and invalid success response types. Packaging and release-script mocks passed,
+including preservation of the previous artifact after an optimized-test failure.
+The release executable also connected to an isolated Herdr 0.9.1 server for the
+[joint app/server quiet-state sample](performance.md). The original installed app
+and its preferences were not changed.
+
+These checks exercise the second review's code changes. The earlier interactive
+results below apply to their recorded candidate. They do not establish a new
+full GUI or supported-OS verification run. VoiceOver remains skipped by owner
+request; larger text, real logout/login, and macOS 14 execution remain open.
+
 ## Interactive release check — 2026-09-28
 
 The signed and notarized 1.0.1 candidate (build 2) was tested on macOS 27.0

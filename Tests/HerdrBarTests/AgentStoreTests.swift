@@ -145,7 +145,7 @@ import Testing
 }
 
 @MainActor
-@Test func aSnapshotOlderThanAnEventIsNotShown() async throws {
+@Test func snapshotBeforeCompletionWaitsForValidatedAttention() async throws {
     let (store, fake, _) = makeStore()
     defer { store.stop(); fake.close() }
     try await startWithEvents(store, fake)
@@ -157,7 +157,7 @@ import Testing
     // Herdr made this snapshot before the agent became idle.
     fake.answerSnapshot(try snapshot([agent(status: "working", seq: 2)]))
     await eventually { fake.pendingSnapshots == 1 }
-    #expect(store.rows.first?.status == .done)
+    #expect(store.rows.first?.status == .working)
     fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 3)]))
     await eventually { store.rows.first?.status == .done }
 }
@@ -177,24 +177,23 @@ import Testing
 }
 
 @MainActor
-@Test func fourConsecutiveStaleSnapshotsCannotEraseCompletion() async throws {
+@Test func fourOverlappingSnapshotsCannotCommitAnUnvalidatedCompletion() async throws {
     let (store, fake, _) = makeStore()
     defer { store.stop(); fake.close() }
     try await startWithEvents(store, fake)
     Task { await store.refresh() }
-    for index in 1...4 {
+    for _ in 1...4 {
         await eventually { fake.pendingSnapshots == 1 }
         fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+        await eventually { store.rows.first?.status == .working }
         fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
-        await settle()
-        fake.answerSnapshot(try snapshot([agent(status: "blocked", seq: UInt64(index))]))
-        await settle()
-        #expect(store.rows.first?.status == .done)
+        await eventually { store.rows.first?.status == .idle }
+        fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 1)]))
     }
     await eventually { fake.pendingSnapshots == 1 }
-    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 10)]))
-    await settle()
-    #expect(store.rows.first?.status == .done)
+    #expect(store.rows.first?.status == .idle)
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 9)]))
+    await eventually { store.rows.first?.status == .done }
 }
 
 @MainActor
@@ -252,7 +251,29 @@ import Testing
 }
 
 @MainActor
-@Test func everyObservedCompletionNotifiesEvenBetweenSnapshots() async throws {
+@Test func eachValidatedCompletionNotifiesOnce() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    var delivered: [AgentRow] = []
+    store.deliverNotification = { row, _, _ in delivered.append(row) }
+    store.notificationsEnabled = true
+    for index in 1...2 {
+        fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+        await eventually { store.rows.first?.status == .working }
+        fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+        await eventually { store.rows.first?.status != .working }
+        #expect(delivered.count == index - 1)
+        await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: UInt64(1 + index * 2))]))
+        #expect(delivered.count == index)
+    }
+    #expect(delivered[0].stateGeneration != delivered[1].stateGeneration)
+    store.apply(try snapshot([agent(status: "idle", seq: 5)]))
+    #expect(delivered.count == 2)
+}
+
+@MainActor
+@Test func multipleProvisionalCyclesProduceOneValidatedNotice() async throws {
     let (store, fake, _) = makeStore()
     defer { store.stop(); fake.close() }
     try await startWithEvents(store, fake)
@@ -263,10 +284,11 @@ import Testing
         fake.send(.agentStatus(paneID: "w1:p1", status: .working))
         fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
     }
-    await eventually { delivered.count == 2 }
-    #expect(delivered[0].stateGeneration != delivered[1].stateGeneration)
-    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 5)]))
-    #expect(delivered.count == 2)
+    await eventually { fake.pendingSnapshots == 1 }
+    #expect(delivered.isEmpty)
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 5)]))
+    await eventually { store.rows.first?.status == .done }
+    #expect(delivered.count == 1)
 }
 
 @MainActor
@@ -367,7 +389,7 @@ import Testing
     try await startWithEvents(store, fake)
     fake.send(.agentStatus(paneID: "w1:p1", status: .working))
     fake.send(.agentStatus(paneID: "w1:p1", status: .done))
-    await eventually { store.rows.first?.status == .done }
+    await answerSnapshots(fake, with: try snapshot([agent(status: "done", seq: 3)]))
     store.markDoneAsRead()
     fake.send(.layoutChanged)
     await eventually { fake.pendingSnapshots == 1 }
@@ -402,6 +424,26 @@ import Testing
     #expect(store.transportMode == "Live")
     #expect(store.lastEventError == nil)
     #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func invalidFocusReplyCannotActivateOrAcknowledgeCompletion() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    var activated = false
+    var opened = false
+    store.activateTerminal = { _, _ in activated = true }
+    store.onOpen = { opened = true }
+    store.apply(try snapshot([agent(status: "done", seq: 1)]))
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    fake.answerFocus(error: HerdrError.invalidResponse)
+    await eventually { store.openingID == nil }
+    #expect(!activated)
+    #expect(!opened)
+    #expect(store.rows.first?.status == .done)
+    #expect(store.actionError == HerdrError.invalidResponse.localizedDescription)
+    #expect(fake.pendingSnapshots == 0)
 }
 
 @MainActor
@@ -536,15 +578,14 @@ import Testing
     let (store, fake, _) = makeStore()
     defer { store.stop(); fake.close() }
     try await startWithEvents(store, fake)
-    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
-    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
-    await eventually { store.rows.first?.status == .done }
+    store.apply(try snapshot([agent(status: "done", seq: 3)]))
     let oldRow = try #require(store.rows.first)
     store.open(oldRow)
     await eventually { fake.pendingFocuses == 1 }
     fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    await eventually { store.rows.first?.status == .working }
     fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
-    await eventually { store.rows.first?.stateGeneration != oldRow.stateGeneration && store.rows.first?.status == .done }
+    await eventually { store.rows.first?.status == .done }
     await eventually { fake.pendingSnapshots == 1 }
     var opened = false
     store.onOpen = { opened = true }
@@ -554,6 +595,51 @@ import Testing
     fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 5)]))
     await eventually { store.openingID == nil }
     #expect(store.rows.first?.status == .done)
+    #expect(store.rows.first?.stateGeneration != oldRow.stateGeneration)
+}
+
+@MainActor
+@Test func statusBeforeLayoutCannotNotifyForTheOldOccupant() async throws {
+    for completeCycle in [false, true] {
+        let (store, fake, _) = makeStore()
+        defer { store.stop(); fake.close() }
+        try await startWithEvents(store, fake)
+        var delivered: [AgentRow] = []
+        store.deliverNotification = { row, _, _ in delivered.append(row) }
+        store.notificationsEnabled = true
+        fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+        await eventually { store.rows.first?.status == .working }
+        if completeCycle { fake.send(.agentStatus(paneID: "w1:p1", status: .idle)) }
+        fake.send(.layoutChanged)
+        await eventually { store.rows.first?.status == .idle }
+        #expect(delivered.isEmpty)
+        let recovered = try snapshot([
+            agent("w2:p1", status: "idle", seq: 1),
+            agent("w1:p1", status: "working", seq: 2, terminal: "replacement"),
+        ])
+        await answerSnapshots(fake, with: recovered)
+        store.apply(recovered)
+        #expect(store.rows.first(where: { $0.id == "w2:p1" })?.status == .idle)
+        #expect(delivered.isEmpty)
+    }
+}
+
+@MainActor
+@Test func lateOldStatusCycleCannotNotifyAfterANewerSnapshot() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    store.apply(try snapshot([agent(status: "idle", seq: 7)]))
+    var delivered: [AgentRow] = []
+    store.deliverNotification = { row, _, _ in delivered.append(row) }
+    store.notificationsEnabled = true
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    await eventually { store.rows.first?.status == .working }
+    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    await answerSnapshots(fake, with: try snapshot([agent(status: "idle", seq: 7)]))
+    store.apply(try snapshot([agent(status: "idle", seq: 7)]))
+    #expect(store.rows.first?.status == .idle)
+    #expect(delivered.isEmpty)
 }
 
 @MainActor

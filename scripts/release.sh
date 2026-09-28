@@ -83,6 +83,7 @@ cd "$source_dir"
 app="dist/Herdr Bar.app"
 
 swift test
+swift test -c release
 ./scripts/build.sh
 architecture="$(python3 scripts/verify-bundle.py "$app" Resources/Info.plist)"
 artifact="HerdrBar-$version-$architecture"
