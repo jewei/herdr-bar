@@ -333,22 +333,23 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
 }
 
 @Test func slowEventConsumerGetsAnExplicitOverflowAndSocketClosure() async throws {
-    let server = try TestSocketServer(linger: 3_000_000) { request in
+    let decodedLimit = 4
+    let server = try TestSocketServer(linger: 3_000_000, chunkDelay: 0) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
         let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]])
-        // The server paces chunks, allowing the intermediate line stream to drain.
-        return [acknowledgement + Data([10])] + Array(
-            repeating: Data("{\"event\":\"pane.created\"}\n".utf8), count: HerdrClient.maximumBufferedEvents)
+        // Five frames fit the wire queue, but overflow the four-element decoded queue.
+        let events = String(repeating: "{\"event\":\"pane.created\"}\n", count: decodedLimit)
+        return [acknowledgement + Data([10]) + Data(events.utf8)]
     }
     defer { server.stop() }
-    let stream = HerdrClient(socketPath: server.path).events(paneIDs: [])
-    #expect(await signalled(server.clientClosed, timeout: 2))
+    let stream = HerdrClient(socketPath: server.path).events(paneIDs: [], maximumBufferedEvents: decodedLimit)
+    try #require(await signalled(server.clientClosed, timeout: 2))
     var received = 0
     do {
         for try await _ in stream { received += 1 }
         Issue.record("Expected an event buffer overflow")
     } catch HerdrError.streamOverflow {}
-    #expect(received == HerdrClient.maximumBufferedEvents)
+    #expect(received == decodedLimit)
 }
 
 @Test func cancellingAQuietLineConsumerClosesTheSocket() async throws {
