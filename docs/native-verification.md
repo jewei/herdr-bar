@@ -21,18 +21,19 @@ Herdr session was not stopped or changed.
 | Text contrast | Calculated theme contrast was at least 4.67:1 for the checked foreground, muted, and status colors against normal and selected row backgrounds. This does not establish larger-text or assistive-technology usability. |
 | Distribution | Developer ID signature, Apple notarization, stapled ticket, archive checksum, and Gatekeeper assessment passed. The extracted archive also passed assessment with quarantine set. |
 
-VoiceOver speech verification did not complete: the automation lost keyboard
-focus to another application. Accessible labels alone do not prove spoken
-navigation works. VoiceOver, its temporary AppleScript setting, app preferences,
-and the installed app are restored after the check. macOS notification
-permission remains granted; the app's original notification preference is
-restored separately.
+VoiceOver navigation and speech checks are skipped for release 1.0.1 at the
+owner's request on 2026-09-28. The earlier speech check did not complete because
+the automation lost keyboard focus to another application. Accessible labels
+alone do not prove spoken navigation works. VoiceOver, its temporary AppleScript
+setting, app preferences, and the installed app were restored after the check.
+macOS notification permission remains granted; the app's original notification
+preference was restored separately.
 
-The remaining release checks are VoiceOver navigation and speech, larger-text
-use, a real logout/login cycle, and execution on the oldest supported macOS
-version. The logout test needs a separate session because it would close
-current work. Only `arm64` is distributed by this candidate; these results do
-not establish Intel support. No release was published during this check.
+The remaining release checks are larger-text use, a real logout/login cycle,
+and execution on the oldest supported macOS version. The logout test needs a
+separate session because it would close current work. Only `arm64` is distributed
+by this candidate; these results do not establish Intel support. No release was
+published during this check.
 
 ## Independent review follow-up — 2026-09-28
 
