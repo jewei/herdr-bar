@@ -1,130 +1,143 @@
 # Native verification
 
-## Release 1.0.1 check exclusions — 2026-09-28
+This record separates automated results from interactive macOS checks.
+Each result applies to the recorded run or candidate. The
+[native release checklist](native-checklist.md) contains the procedure for future
+checks.
 
-The owner requested that these checks be skipped for release 1.0.1:
+## Release 1.0.1 check exclusions
+
+On 2026-09-28, the owner excluded these checks from release 1.0.1:
 
 | Check | Status |
 | --- | --- |
-| VoiceOver navigation and speech | Skipped by owner request; speech verification did not complete. |
-| Larger-text use | Skipped by owner request; not performed. |
-| Real logout/login startup | Skipped by owner request; registration was checked, but startup after login was not. |
-| Runtime execution on macOS 14 | Skipped by owner request; not performed. |
+| VoiceOver navigation and speech | Skipped at the owner's request. The speech check did not complete. |
+| Larger-text use | Skipped at the owner's request. Not performed. |
+| Startup after logout and login | Skipped at the owner's request. Registration passed, but startup was not tested. |
+| Execution on macOS 14 | Skipped at the owner's request. Not performed. |
 
-These checks are excluded from the release 1.0.1 requirements. They are not
-recorded as passed. The recorded test results and runtime limits below remain
-unchanged. The repeatable checklist remains available for future releases.
+The excluded checks are not recorded as passed.
 
-## Second review checks — 2026-09-28
+## Second review checks
 
-On macOS 27.0 arm64 with Swift 6.4, both `swift test` and
-`swift test -c release` passed 116 tests: 37 store tests and 79 core tests.
-The new cases cover delayed topology notices, independently advancing subscription
-cursors and snapshots, stale event cycles, provisional notification suppression,
-and invalid success response types. Packaging and release-script mocks passed,
-including preservation of the previous artifact after an optimized-test failure.
-The release executable also connected to an isolated Herdr 0.9.1 server for the
-[joint app/server quiet-state sample](performance.md). The original installed app
-and its preferences were not changed.
+On 2026-09-28, `swift test` and `swift test -c release` each passed 116 tests
+on macOS 27.0 arm64 with Swift 6.4. The run included 37 store tests and 79 core
+tests.
 
-These checks exercise the second review's code changes. The earlier interactive
-results below apply to their recorded candidate. They do not establish a new
-full GUI or supported-OS verification run. VoiceOver, larger text, real
-logout/login, and macOS 14 execution are skipped as recorded above.
+The new cases covered these behaviors:
 
-## Interactive release check — 2026-09-28
+- Delayed layout events
+- Independent subscription positions and snapshot replies
+- Stale event cycles
+- Suppression of provisional notifications
+- Invalid success response types
 
-The signed and notarized 1.0.1 candidate (build 2) was tested on macOS 27.0
-(26A428), Apple Silicon, with Herdr 0.9.1 / protocol 22 and Apple Terminal.
-The candidate source was `5c40c7877c0be1071e6c9fb3e18756c8daefb38c`.
-A separate named Herdr session held synthetic agent reports. The production
-Herdr session was not stopped or changed.
+Packaging and release tests with mock services passed. They included a check
+that a failed `swift test -c release` run preserved the previous archive.
+
+The release executable connected to an isolated Herdr 0.9.1 server for the
+[quiet-state performance sample](performance-baseline.md). The installed app
+and its preferences remained unchanged.
+
+These results cover the second review's code changes. They do not repeat the
+earlier interactive checks or test every supported OS. The release 1.0.1
+exclusions still apply.
+
+## Interactive release check
+
+On 2026-09-28, the signed and notarized 1.0.1 candidate, build 2, ran on
+macOS 27.0, build 26A428, on Apple Silicon. The check used Herdr 0.9.1,
+protocol 22, and Apple Terminal. The candidate source was
+`5c40c7877c0be1071e6c9fb3e18756c8daefb38c`.
+
+A separate named Herdr session contained synthetic agent reports.
+The production Herdr session remained unchanged. The check produced these results:
 
 | Check | Result |
 | --- | --- |
 | Keyboard navigation | Up and Down selected rows. Return focused the selected pane and closed the popover. Escape closed the popover. |
-| Selection and status | Attention order put blocked work first. Opening a blocked row kept its blocked status. |
-| Native notifications | macOS permission was granted. Two distinct completions sent notices. An unchanged refresh did not send another notice. Clicking a notice focused the correct pane and acknowledged its completion. |
-| Pane moves and replacements | A notice followed its agent after a move to another workspace. After the old pane was closed, its notice did not focus the replacement pane. Replacing an agent session in the same terminal remains covered by automated tests, not this native check. |
-| Terminal activation | Automatic and explicit Terminal selection worked. Automatic selection also worked with two attached Terminal clients. Selecting an unavailable terminal showed an error and kept the completion unread. Exact outer window selection is not guaranteed. |
-| Connection recovery | Stopping only the test server produced Offline. After that server restarted, the app returned to Live without a manual refresh. The brief Polling phase was not separately captured. |
-| Login item registration | Enabling and disabling the setting changed the native menu state. macOS reported the added login item. Registration was disabled again. A real logout/login cycle was not performed. |
-| Accessibility metadata | Row labels exposed full names, agent kind, status, selection, and action hints. A long workspace name was shortened in the visible row and retained in its accessible label. |
-| Text contrast | Calculated theme contrast was at least 4.67:1 for the checked foreground, muted, and status colors against normal and selected row backgrounds. This does not establish larger-text or assistive-technology usability. |
-| Distribution | Developer ID signature, Apple notarization, stapled ticket, archive checksum, and Gatekeeper assessment passed. The extracted archive also passed assessment with quarantine set. |
+| Selection and status | Attention order placed blocked work first. Opening a blocked row preserved its blocked status. |
+| Native notifications | macOS permission was granted. Two completions sent separate notifications. An unchanged refresh sent no duplicate. A notification click focused the correct pane and acknowledged its completion. |
+| Pane moves and replacements | A notification followed its agent across a workspace move. After the old pane closed, its notification did not focus the replacement pane. |
+| Terminal activation | Automatic and explicit Terminal selection worked. Automatic also worked with two attached Terminal clients. An unavailable terminal caused an error and left the completion unread. |
+| Connection recovery | Stopping the test server caused Offline status. After the server restarted, Live status returned without manual refresh. The brief Polling phase was not recorded separately. |
+| Login item registration | Enabling and disabling the setting changed the native menu state. macOS reported the added login item. Registration was disabled again after the check. |
+| Accessibility metadata | Row labels contained full names, agent kind, status, selection, and action hints. A shortened workspace name remained complete in its accessible label. |
+| Text contrast | Calculated contrast was at least 4.67:1 for the checked foreground, muted, and status colors against normal and selected row backgrounds. |
+| Distribution | The Developer ID signature, notarization, stapled ticket, archive checksum, and Gatekeeper assessment passed. The extracted archive also passed assessment with quarantine set. |
 
-VoiceOver navigation and speech checks are skipped for release 1.0.1 at the
-owner's request on 2026-09-28. The earlier speech check did not complete because
-the automation lost keyboard focus to another application. Accessible labels
-alone do not prove spoken navigation works. VoiceOver, its temporary AppleScript
-setting, app preferences, and the installed app were restored after the check.
-macOS notification permission remains granted; the app's original notification
-preference was restored separately.
+Automated tests cover replacement of an agent session in the same terminal.
+This native check did not test that case. Terminal activation does not guarantee
+selection of a specific outer window. Contrast and accessible labels do not
+establish usability with larger text or assistive technology.
 
-Larger-text use, a real logout/login cycle, and execution on the oldest supported
-macOS version were not checked and are now skipped for release 1.0.1 by owner
-request. Only `arm64` is distributed by this candidate; these results do not
-establish Intel support. No release was published during this check.
+The earlier VoiceOver speech check did not complete because the automation lost
+keyboard focus to another application. After the check, VoiceOver and its
+temporary AppleScript setting returned to their original state. App preferences
+and the installed app were also restored. macOS notification permission remained
+granted, while the app's notification preference returned to its original value.
 
-## Independent review follow-up — 2026-09-28
+Larger-text use, startup after logout and login, and macOS 14 execution were not
+tested. The owner later excluded those checks and VoiceOver for release 1.0.1.
+The candidate distributes only `arm64`. These results do not establish Intel
+support. No release was published during this check.
 
-Checked on macOS 27.0 (26A428), Apple Silicon, with Xcode 27.0 and Swift 6.4:
+## First review follow-up
 
-- All 100 native Swift tests passed: 32 store tests and 68 core tests.
-- The release build passed. Bundle metadata, the `arm64` executable, and its
-  ad hoc code signature passed validation.
-- Packaging and full release tests passed with mock Apple services. They cover
-  source export, source changes during a build, tag/build rules, provenance,
-  checksums, and rollback after artifact promotion failure.
-- All five release-build previews rendered and were inspected: agents,
-  attention, empty, offline, and loading. The attention summary uses an ellipsis
-  when its text exceeds the available footer width.
-- Two independent agents checked every supplied review item and checked the
-  follow-up fixes. See [decisions and limits](review-decisions.md).
+On 2026-09-28, the checks ran on macOS 27.0, build 26A428, on Apple Silicon
+with Xcode 27.0 and Swift 6.4. They produced these results:
+
+- All 100 native Swift tests passed, with 32 store tests and 68 core tests.
+- The release build, bundle metadata, `arm64` executable, and ad hoc signature
+  passed validation.
+- Packaging and release tests passed with mock Apple services. They covered
+  source export, source changes during a build, tag rules, build numbers,
+  manifests, checksums, and recovery after a failed archive replacement.
+- The agents, attention, empty, offline, and loading previews rendered and passed
+  visual inspection. The attention summary used an ellipsis when its text
+  exceeded the footer width.
+- Two independent agents checked every supplied review item and the later fixes.
+  The [first review decisions](review-decisions.md) record their findings.
 
 CI selects Xcode 16.4 on macOS 15 and repeats tests and bundle validation.
-See the pull request and main-branch CI results for the tested commit. Release
-manifests record the source commit and actual signing build toolchain. Mock
-release tests do not establish Apple notarization of a distribution artifact.
+Pull request and main-branch CI records identify the tested commit.
+Release manifests record the source commit and actual signing toolchain.
+Mock release tests do not establish Apple notarization of a distribution archive.
 
 ## Reliability follow-up
 
-Checked locally on macOS 27.0 (26A428), Apple Silicon, with Swift 6.4:
+The earlier reliability checks ran on macOS 27.0, build 26A428, on Apple Silicon
+with Swift 6.4. They produced these results:
 
-- `swift test`: 89 tests passed, including malformed-frame socket closure, polling/retry recovery, cancelled process discovery, and failed terminal activation preserving unread state. Mock activation tests do not establish real window focus behavior.
-- `swift build -c release`: passed without compiler warnings.
-- `bash scripts/test-packaging.sh`: passed the isolated staging and release-guard checks. Signing/notarization is mocked, not a check of a published artifact.
-- The release executable rendered the agents, attention, empty, offline, and loading palettes; all five PNGs were visually inspected. The offline preview uses a deliberately missing socket; no live Herdr session is stopped or modified.
-- Five schema-fixture tests cover Herdr 0.9.1 / protocol 22. The retained excerpt nodes were also compared with the offline schema export. See [provenance and limits](protocol-compatibility.md); this is not full-schema or live-server conformance validation.
-- Before moving discovery off-main, 30 optimized process-scan/ancestor-walk samples measured median 5.61 ms, p95 6.69 ms, and maximum 100.67 ms. This measures process discovery, not AppKit activation or a demonstrated UI stall. Process work now runs in a cancellable detached task, while AppKit stays main-actor isolated. No PID cache was added.
+| Check | Result |
+| --- | --- |
+| `swift test` | All 89 tests passed. |
+| `swift build -c release` | The build passed without compiler warnings. |
+| `bash scripts/test-packaging.sh` | Isolated bundle construction and release precondition tests passed with mock signing and notarization. |
+| Native previews | The agents, attention, empty, offline, and loading previews rendered and passed visual inspection. |
+| Protocol fixtures | Five tests covered Herdr 0.9.1 and protocol 22. Retained schema nodes also matched the offline export. |
 
-Reproduce the noninteractive native preview check from the repository root:
+The tests covered socket closure after malformed frames, polling and retry
+recovery, cancelled process discovery, and unread state after terminal activation
+failure. Mock activation does not establish real window focus behavior.
+Mock signing and notarization do not verify a published archive.
 
-```sh
-swift test
-swift build -c release
-binary_dir="$(swift build -c release --show-bin-path)"
-preview_dir="$(mktemp -d)"
-for state in agents attention empty offline loading; do
-    "$binary_dir/HerdrBar" --render-preview "$preview_dir/$state.png" --state "$state"
-done
-printf 'Inspect previews in %s\n' "$preview_dir"
-```
+The offline preview used a missing socket. No live Herdr session was stopped
+or changed. The preview check left the normal app instance, notification
+permissions, and login registration unchanged. The
+[preview procedure](development.md#render-the-previews) contains the commands.
 
-This needs a macOS GUI session. It renders synthetic data without opening the
-normal app instance, changing notification permissions, or registering a login
-item. The comments in `scripts/profile-discovery.swift` provide a read-only,
-repeatable discovery timing command. Results depend on machine load and process
-count; elapsed discovery time is not time spent blocking the main actor.
+The protocol checks covered selected schema nodes. They did not validate the
+full schema or establish live-server conformance. The
+[protocol reference](protocol-compatibility.md) records fixture sources and limits.
 
-## Repeatable interactive release checklist
+Before process discovery moved off the main actor, 30 optimized samples measured
+a median of 5.61 ms, p95 of 6.69 ms, and maximum of 100.67 ms.
+The samples measured process scans and parent traversal. They did not measure
+AppKit activation or establish a visible UI delay.
 
-Use a disposable Herdr session and a built app installed in `~/Applications`.
-Record macOS, architecture, Herdr version, terminal application, and each result.
-Do not stop a production session or close working terminals to perform these checks.
-
-- **Notifications:** explicitly enable permission, with Focus/Do Not Disturb accounted for. Complete two tasks in the same agent and verify new notifications; unchanged snapshots must not generate more. Move the pane and test notification routing. Replace the agent session and confirm an old notification cannot open/acknowledge the replacement. Restore the preferred notification setting afterward.
-- **Terminal focus:** exercise Automatic and an explicit terminal with multiple windows, multiple attached clients, and named sessions. Check the actual pane being shown, not merely the foreground app. Exact outer window/tab selection remains a documented limitation. Verify a terminal-activation failure leaves completion unread and shows an actionable error.
-- **Disconnect/reconnect:** point Herdr Bar at the disposable session, stop/restart that session, and check Disconnected → Polling → Live recovery. Confirm no stale connection can alter the replacement connection's rows. Short work completed entirely during a gap may not be recoverable.
-- **Login item:** explicitly toggle on, check System Settings → General → Login Items, log out/in, and confirm a single working app instance. Then restore the original setting. The check above covers registration only.
-- **Distribution:** validate signing, notarization, oldest supported macOS, and each distributed CPU architecture separately. Neither preview rendering nor the current host's unit tests establish those properties.
+Process discovery now runs in a cancellable detached task. AppKit stays on the
+main actor. No PID cache was added. The
+[discovery measurement procedure](performance.md#measure-terminal-discovery)
+contains the command for new samples. Machine load and process count affect
+results. Elapsed discovery time does not measure time spent on the main actor.
