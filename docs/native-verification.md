@@ -1,5 +1,39 @@
 # Native verification
 
+## Interactive release check — 2026-09-28
+
+The signed and notarized 1.0.1 candidate (build 2) was tested on macOS 27.0
+(26A428), Apple Silicon, with Herdr 0.9.1 / protocol 22 and Apple Terminal.
+The candidate source was `5c40c7877c0be1071e6c9fb3e18756c8daefb38c`.
+A separate named Herdr session held synthetic agent reports. The production
+Herdr session was not stopped or changed.
+
+| Check | Result |
+| --- | --- |
+| Keyboard navigation | Up and Down selected rows. Return focused the selected pane and closed the popover. Escape closed the popover. |
+| Selection and status | Attention order put blocked work first. Opening a blocked row kept its blocked status. |
+| Native notifications | macOS permission was granted. Two distinct completions sent notices. An unchanged refresh did not send another notice. Clicking a notice focused the correct pane and acknowledged its completion. |
+| Pane moves and replacements | A notice followed its agent after a move to another workspace. After the old pane was closed, its notice did not focus the replacement pane. Replacing an agent session in the same terminal remains covered by automated tests, not this native check. |
+| Terminal activation | Automatic and explicit Terminal selection worked. Automatic selection also worked with two attached Terminal clients. Selecting an unavailable terminal showed an error and kept the completion unread. Exact outer window selection is not guaranteed. |
+| Connection recovery | Stopping only the test server produced Offline. After that server restarted, the app returned to Live without a manual refresh. The brief Polling phase was not separately captured. |
+| Login item registration | Enabling and disabling the setting changed the native menu state. macOS reported the added login item. Registration was disabled again. A real logout/login cycle was not performed. |
+| Accessibility metadata | Row labels exposed full names, agent kind, status, selection, and action hints. A long workspace name was shortened in the visible row and retained in its accessible label. |
+| Text contrast | Calculated theme contrast was at least 4.67:1 for the checked foreground, muted, and status colors against normal and selected row backgrounds. This does not establish larger-text or assistive-technology usability. |
+| Distribution | Developer ID signature, Apple notarization, stapled ticket, archive checksum, and Gatekeeper assessment passed. The extracted archive also passed assessment with quarantine set. |
+
+VoiceOver speech verification did not complete: the automation lost keyboard
+focus to another application. Accessible labels alone do not prove spoken
+navigation works. VoiceOver, its temporary AppleScript setting, app preferences,
+and the installed app are restored after the check. macOS notification
+permission remains granted; the app's original notification preference is
+restored separately.
+
+The remaining release checks are VoiceOver navigation and speech, larger-text
+use, a real logout/login cycle, and execution on the oldest supported macOS
+version. The logout test needs a separate session because it would close
+current work. Only `arm64` is distributed by this candidate; these results do
+not establish Intel support. No release was published during this check.
+
 ## Independent review follow-up — 2026-09-28
 
 Checked on macOS 27.0 (26A428), Apple Silicon, with Xcode 27.0 and Swift 6.4:
@@ -51,7 +85,7 @@ item. The comments in `scripts/profile-discovery.swift` provide a read-only,
 repeatable discovery timing command. Results depend on machine load and process
 count; elapsed discovery time is not time spent blocking the main actor.
 
-## Interactive release checklist — not performed in this follow-up
+## Repeatable interactive release checklist
 
 Use a disposable Herdr session and a built app installed in `~/Applications`.
 Record macOS, architecture, Herdr version, terminal application, and each result.
@@ -60,5 +94,5 @@ Do not stop a production session or close working terminals to perform these che
 - **Notifications:** explicitly enable permission, with Focus/Do Not Disturb accounted for. Complete two tasks in the same agent and verify new notifications; unchanged snapshots must not generate more. Move the pane and test notification routing. Replace the agent session and confirm an old notification cannot open/acknowledge the replacement. Restore the preferred notification setting afterward.
 - **Terminal focus:** exercise Automatic and an explicit terminal with multiple windows, multiple attached clients, and named sessions. Check the actual pane being shown, not merely the foreground app. Exact outer window/tab selection remains a documented limitation. Verify a terminal-activation failure leaves completion unread and shows an actionable error.
 - **Disconnect/reconnect:** point Herdr Bar at the disposable session, stop/restart that session, and check Disconnected → Polling → Live recovery. Confirm no stale connection can alter the replacement connection's rows. Short work completed entirely during a gap may not be recoverable.
-- **Login item:** explicitly toggle on, check System Settings → General → Login Items, log out/in, and confirm a single working app instance. Then restore the original setting. No login registration or permission prompts were triggered by this follow-up.
+- **Login item:** explicitly toggle on, check System Settings → General → Login Items, log out/in, and confirm a single working app instance. Then restore the original setting. The check above covers registration only.
 - **Distribution:** validate signing, notarization, oldest supported macOS, and each distributed CPU architecture separately. Neither preview rendering nor the current host's unit tests establish those properties.
