@@ -442,6 +442,166 @@ import Testing
     #expect(fake.pendingSnapshots == 0)
 }
 
+@MainActor
+@Test func stoppingDuringManualRefreshPreventsLatePublication() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    var changes = 0
+    store.onChange = { changes += 1 }
+    let refresh = Task { await store.refresh() }
+    await eventually { fake.pendingSnapshots == 1 }
+    store.stop()
+    fake.answerSnapshot(try snapshot([agent(status: "done", seq: 1)]))
+    await refresh.value
+    #expect(store.rows.isEmpty)
+    #expect(!store.connected)
+    #expect(store.loading)
+    #expect(changes == 0)
+    #expect(fake.subscriptions.isEmpty)
+}
+
+@MainActor
+@Test func stoppingDuringEventRefreshPreventsLatePublication() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    await eventually { fake.pendingSnapshots == 1 }
+    var joined = false
+    let refresh = Task { joined = true; await store.refresh() }
+    await eventually { joined }
+    store.stop()
+    fake.answerSnapshot(try snapshot([agent(status: "blocked", seq: 3)]))
+    await refresh.value
+    #expect(store.rows.first?.status == .working)
+    #expect(!store.eventsLive)
+    #expect(fake.pendingSnapshots == 0)
+    #expect(fake.subscriptions.count == 1)
+}
+
+@MainActor
+@Test func restartDoesNotWaitForOrPublishAnOldRefresh() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    let oldRefresh = Task { await store.refresh() }
+    await eventually { fake.pendingSnapshots == 1 }
+    store.stop()
+    store.start()
+    await eventually { fake.pendingSnapshots == 2 }
+    fake.answerSnapshot(try snapshot([agent(status: "working", seq: 2)]), at: 1)
+    await eventually { store.connected }
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 1)]))
+    await oldRefresh.value
+    #expect(store.rows.first?.status == .working)
+    #expect(fake.subscriptions.count == 1)
+}
+
+@MainActor
+@Test func aNewConnectionDoesNotInheritTheOldSubscriptionRetryDelay() async throws {
+    let (store, fake, clients) = makeStore(eventRetryDelay: .seconds(60))
+    defer { store.stop(); fake.close(); clients.all.forEach { $0.close() } }
+    try await startWithEvents(store, fake)
+    fake.failStream()
+    await eventually { !store.eventsLive && store.lastEventError != nil }
+
+    store.setSocketPath("/tmp/second.sock")
+    let second = try #require(clients.all.last)
+    await eventually { second.pendingSnapshots == 1 }
+    second.answerSnapshot(try snapshot([agent(status: "idle", seq: 1)]))
+    // The new connection must subscribe before the old connection's 60-second deadline.
+    await eventually { second.subscriptions.count == 1 }
+    second.send(.subscribed)
+    await eventually { store.eventsLive }
+}
+
+@MainActor
+@Test func restartingTheStoreDoesNotWaitForThePreviousSubscriptionRetry() async throws {
+    let (store, fake, _) = makeStore(eventRetryDelay: .seconds(60))
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.failStream()
+    await eventually { !store.eventsLive && store.lastEventError != nil }
+
+    store.stop()
+    store.start()
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 1)]))
+    await eventually { fake.subscriptions.count == 2 }
+    fake.send(.subscribed)
+    await eventually { store.eventsLive }
+}
+
+@MainActor
+@Test func anOldFocusCannotAcknowledgeCompletionEventsBeforeReconciliation() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    try await startWithEvents(store, fake)
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    await eventually { store.rows.first?.status == .done }
+    let oldRow = try #require(store.rows.first)
+    store.open(oldRow)
+    await eventually { fake.pendingFocuses == 1 }
+    fake.send(.agentStatus(paneID: "w1:p1", status: .working))
+    fake.send(.agentStatus(paneID: "w1:p1", status: .idle))
+    await eventually { store.rows.first?.stateGeneration != oldRow.stateGeneration && store.rows.first?.status == .done }
+    await eventually { fake.pendingSnapshots == 1 }
+    var opened = false
+    store.onOpen = { opened = true }
+    fake.answerFocus()
+    await eventually { opened }
+    #expect(store.rows.first?.status == .done)
+    fake.answerSnapshot(try snapshot([agent(status: "idle", seq: 5)]))
+    await eventually { store.openingID == nil }
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
+@Test func livePollingSleepsToTheTitleDeadlineAndStreamFailureWakesIt() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    let sleeps = OSAllocatedUnfairLock(initialState: [Duration]())
+    store.sleepForPolling = { delay in
+        sleeps.withLock { $0.append(delay) }
+        try await Task.sleep(for: .seconds(60))
+    }
+    try await startWithEvents(store, fake)
+    await eventually { sleeps.withLock { ($0.last ?? .zero) > .seconds(14) } }
+    #expect(sleeps.withLock { $0.last! <= .seconds(15) })
+    let count = sleeps.withLock { $0.count }
+    fake.failStream()
+    await eventually { sleeps.withLock { $0.count > count && $0.last! <= .seconds(2) } }
+    #expect(!store.eventsLive)
+}
+
+@MainActor
+@Test func offlinePollingBackoffIsCappedAndSuccessRestoresTheNormalInterval() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    let sleeps = OSAllocatedUnfairLock(initialState: [Duration]())
+    store.sleepForPolling = { delay in
+        sleeps.withLock { $0.append(delay) }
+        try await Task.sleep(for: .seconds(60))
+    }
+    store.start()
+    for seconds in [2, 4, 8, 16, 30, 30] {
+        await eventually { fake.pendingSnapshots == 1 }
+        let count = sleeps.withLock { $0.count }
+        fake.failSnapshot()
+        await eventually { sleeps.withLock { $0.count > count } }
+        let delay = try #require(sleeps.withLock { $0.last })
+        #expect(delay <= .seconds(seconds))
+        #expect(delay > .seconds(seconds - 1))
+        // A user request must start at once, even while the poll timer backs off.
+        Task { await store.refresh() }
+    }
+    await eventually { fake.pendingSnapshots == 1 }
+    let count = sleeps.withLock { $0.count }
+    fake.answerSnapshot(try snapshot([]))
+    await eventually { store.connected && sleeps.withLock { $0.count > count } }
+    #expect(sleeps.withLock { $0.last! <= .seconds(2) })
+}
+
 // MARK: - Helpers
 
 @MainActor
@@ -559,12 +719,21 @@ private final class FakeHerdr: HerdrService {
     var subscriptions: [[String]] { state.withLock { $0.subscriptions } }
     var closedStreams: Int { state.withLock { $0.closedStreams } }
 
-    func answerSnapshot(_ snapshot: SessionSnapshot, sourceLocation: SourceLocation = #_sourceLocation) {
-        guard let continuation = state.withLock({ $0.snapshots.isEmpty ? nil : $0.snapshots.removeFirst() }) else {
+    func answerSnapshot(_ snapshot: SessionSnapshot, at index: Int = 0,
+                        sourceLocation: SourceLocation = #_sourceLocation) {
+        guard let continuation = state.withLock({ $0.snapshots.indices.contains(index) ? $0.snapshots.remove(at: index) : nil }) else {
             Issue.record("The store did not request a snapshot.", sourceLocation: sourceLocation)
             return
         }
         continuation.resume(returning: snapshot)
+    }
+
+    func failSnapshot(sourceLocation: SourceLocation = #_sourceLocation) {
+        guard let continuation = state.withLock({ $0.snapshots.isEmpty ? nil : $0.snapshots.removeFirst() }) else {
+            Issue.record("The store did not request a snapshot.", sourceLocation: sourceLocation)
+            return
+        }
+        continuation.resume(throwing: HerdrError.timeout)
     }
 
     func answerFocus(error: (any Error)? = nil, sourceLocation: SourceLocation = #_sourceLocation) {

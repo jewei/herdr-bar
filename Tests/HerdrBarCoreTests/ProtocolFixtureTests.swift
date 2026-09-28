@@ -77,9 +77,16 @@ import Testing
     @Test func additivePayloadChangesRemainCompatible() throws {
         // These mutations are forward-compatibility probes, not 0.9.1 schema examples.
         let bodies: [Any] = [NSNull(), 17, ["pane_id": 42, "agent_status": ["new": true]]]
-        for name in HerdrEvent.layoutTypes + ["future.layout_event"] {
+        let names = HerdrEvent.layoutTypes + HerdrEvent.layoutTypes.map { $0.replacingOccurrences(of: ".", with: "_") }
+            + ["pane_agent_status_changed", "layout.updated", "layout_updated"]
+        for name in names {
             for body in bodies {
                 #expect(HerdrEvent(line: try encode(["event": name, "data": body])) == .layoutChanged)
+            }
+        }
+        for name in ["future.layout_event", "workspace.future_event", "pane.updated"] {
+            for body in bodies {
+                #expect(HerdrEvent(line: try encode(["event": name, "data": body])) == .ignored)
             }
         }
         #expect(HerdrEvent(line: Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"future_status"}}"#.utf8))

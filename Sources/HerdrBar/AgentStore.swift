@@ -31,14 +31,17 @@ final class AgentStore: ObservableObject {
     private let defaults: UserDefaults
     private var tracker = AttentionTracker()
     private var pollTask: Task<Void, Never>?
+    private var pollSleepTask: Task<Void, any Error>?
     private var openTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var scheduledRefreshTask: Task<Void, Never>?
+    private var refreshNeeded = false
+    private var stopped = false
     private var lastNotified: [AgentIdentity: UInt64] = [:]
     nonisolated private static let logger = Logger(subsystem: "dev.jewei.herdr-bar", category: "connection")
     /// Injectable so notification eligibility can be tested without macOS services.
     var deliverNotification: @MainActor (AgentRow, String, String) -> Void = AgentStore.sendNotification
     private(set) var notificationScope = UUID().uuidString
-    private var refreshingGeneration: Int?
     private var hasSnapshot = false
     private var connectionGeneration = 0
     private var eventTask: Task<Void, Never>?
@@ -51,6 +54,9 @@ final class AgentStore: ObservableObject {
     private let eventRetryDelay: Duration
     private var eventRetry = ContinuousClock.now
     private var lastRefresh = ContinuousClock.now
+    private var offlineRetryDelay: Duration = .seconds(2)
+    /// Tests can observe deadlines without waiting for the production intervals.
+    var sleepForPolling: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     var onChange: (() -> Void)?
     var onOpen: (() -> Void)?
     var isPreview = false
@@ -90,33 +96,72 @@ final class AgentStore: ObservableObject {
 
     func start() {
         guard pollTask == nil, !isPreview else { return }
+        stopped = false
+        eventRetry = .now
         pollTask = Task { [weak self] in
+            var first = true
             while !Task.isCancelled {
-                // Events report status changes at once. Then a slow poll only updates titles.
-                if let self, !eventsLive || .now - lastRefresh >= .seconds(15) { await refresh() }
-                do { try await Task.sleep(for: .seconds(2)) }
-                catch { return }
+                guard let self else { return }
+                if first || nextPollDelay <= .zero { await refresh() }
+                first = false
+                guard !Task.isCancelled else { return }
+                let delay = nextPollDelay
+                let sleep = sleepForPolling
+                let sleeper = Task { try await sleep(delay) }
+                pollSleepTask = sleeper
+                do { try await sleeper.value }
+                catch { if Task.isCancelled { return } }
+                guard !Task.isCancelled else { return }
+                pollSleepTask = nil
             }
         }
     }
 
+    private var nextPollDelay: Duration {
+        let interval: Duration = eventsLive ? .seconds(15) : connected ? .seconds(2) : offlineRetryDelay
+        return max(.zero, (lastRefresh + interval) - .now)
+    }
+
     func stop() {
+        stopped = true
+        connectionGeneration += 1
         pollTask?.cancel()
         pollTask = nil
+        pollSleepTask?.cancel()
+        pollSleepTask = nil
         openTask?.cancel()
         openTask = nil
+        openingID = nil
         refreshTask?.cancel()
         refreshTask = nil
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+        refreshNeeded = false
         stopEvents()
     }
 
     func refresh() async {
-        // A request for an old connection must not delay the first request for a new one.
-        guard refreshingGeneration != connectionGeneration, !isPreview else { return }
+        guard !stopped, !isPreview else { return }
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+        if let refreshTask { await refreshTask.value; return }
+        refreshNeeded = false
         let generation = connectionGeneration
-        refreshingGeneration = generation
+        let task = Task { [weak self] in
+            guard let self, generation == connectionGeneration, !stopped, !Task.isCancelled else { return }
+            await performRefresh(generation: generation)
+            guard generation == connectionGeneration else { return }
+            lastRefresh = .now
+            refreshTask = nil
+            pollSleepTask?.cancel()
+            if refreshNeeded { scheduleRefresh() }
+        }
+        refreshTask = task
+        await task.value
+    }
+
+    private func performRefresh(generation: Int) async {
         lastRefresh = .now
-        defer { if refreshingGeneration == generation { refreshingGeneration = nil } }
         var discarded = 0
         do {
             while true {
@@ -144,6 +189,7 @@ final class AgentStore: ObservableObject {
         } catch {
             guard generation == connectionGeneration, !Task.isCancelled else { return }
             stopEvents()
+            offlineRetryDelay = connected || loading ? .seconds(2) : min(offlineRetryDelay * 2, .seconds(30))
             let message = error.localizedDescription
             guard connected || loading || connectionError != message else { return }
             connected = false
@@ -155,6 +201,7 @@ final class AgentStore: ObservableObject {
 
     func apply(_ snapshot: SessionSnapshot, preservingObservedStateFor panes: Set<String> = []) {
         let updated = tracker.update(snapshot, preservingObservedStateFor: panes)
+        offlineRetryDelay = .seconds(2)
         topologyUncertain = false
         let live = Set(updated.map(\.identity))
         lastNotified = lastNotified.filter { live.contains($0.key) }
@@ -190,7 +237,7 @@ final class AgentStore: ObservableObject {
     }
 
     func open(_ row: AgentRow) {
-        guard connected, openingID == nil, !isPreview else { return }
+        guard connected, openingID == nil, !stopped, !isPreview else { return }
         guard !topologyUncertain, rows.contains(where: { $0.id == row.id && $0.identity == row.identity }) else {
             actionError = "The agent layout changed. Select the agent again after it refreshes."
             onChange?()
@@ -275,10 +322,14 @@ final class AgentStore: ObservableObject {
         openTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        scheduledRefreshTask?.cancel()
+        scheduledRefreshTask = nil
+        refreshNeeded = false
         stopEvents()
         lastNotified = [:]
         notificationScope = UUID().uuidString
         topologyUncertain = false
+        eventRetry = .now
         lastEventError = nil
         lastSuccessfulRefresh = nil
         client = makeClient(expanded.isEmpty ? SocketLocation.resolve() : expanded)
@@ -294,7 +345,8 @@ final class AgentStore: ObservableObject {
             UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         }
         onChange?()
-        Task { await refresh() }
+        offlineRetryDelay = .seconds(2)
+        scheduleRefresh(delay: .zero)
     }
 
     /// Keeps one event subscription for the agents in the current snapshot.
@@ -335,6 +387,7 @@ final class AgentStore: ObservableObject {
         eventTask = nil
         eventPanes = nil
         eventsLive = false
+        pollSleepTask?.cancel()
         tracker.markEventGap()
     }
 
@@ -343,6 +396,7 @@ final class AgentStore: ObservableObject {
         case .subscribed:
             eventsLive = true
             lastEventError = nil
+            pollSleepTask?.cancel()
         case .agentStatus(let paneID, let status):
             if !topologyUncertain, rows.contains(where: { $0.id == paneID }) {
                 pendingEventPanes.insert(paneID)
@@ -363,20 +417,24 @@ final class AgentStore: ObservableObject {
             topologyUncertain = true
             tracker.markEventGap()
             layoutSerial += 1
+        case .ignored:
+            return
         }
         eventSerial += 1
         scheduleRefresh()
     }
 
     /// One coalesced follow-up, rather than a task per event or a busy retry loop.
-    private func scheduleRefresh() {
-        guard refreshTask == nil else { return }
+    private func scheduleRefresh(delay: Duration = .milliseconds(100)) {
+        guard !stopped else { return }
+        refreshNeeded = true
+        guard refreshTask == nil, scheduledRefreshTask == nil else { return }
         let generation = connectionGeneration
-        refreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(100)) }
+        scheduledRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: delay) }
             catch { return }
             guard let self, generation == connectionGeneration else { return }
-            refreshTask = nil
+            scheduledRefreshTask = nil
             await refresh()
         }
     }

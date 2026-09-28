@@ -20,10 +20,11 @@ import Testing
 }
 
 @Test func oversizedResponsesAreRejected() async throws {
-    let server = try TestSocketServer { _ in [Data(repeating: 32, count: 9 * 1_024 * 1_024)] }
+    let limit = 32_768
+    let server = try TestSocketServer { _ in [Data(repeating: 32, count: limit + 1)] }
     defer { server.stop() }
     do {
-        _ = try await HerdrClient(socketPath: server.path).snapshot()
+        _ = try await SocketTransport(path: server.path).exchange(Data("request\n".utf8), maximumLine: limit)
         Issue.record("Expected a response size error")
     } catch HerdrError.responseTooLarge {}
 }
@@ -197,7 +198,23 @@ func malformedEventEndsTheStreamInsteadOfSkippingATransition(line: String) async
     for try await event in HerdrClient(socketPath: server.path).events(paneIDs: ["w1:p1"]) {
         events.append(event)
     }
-    #expect(events == [.subscribed, .agentStatus(paneID: "w1:p1", status: .unknown), .layoutChanged, .layoutChanged])
+    #expect(events == [.subscribed, .agentStatus(paneID: "w1:p1", status: .unknown), .layoutChanged])
+}
+
+@Test func unknownEventsDoNotInterruptAWorkTransition() async throws {
+    let server = try TestSocketServer(chunkDelay: 0) { request in
+        let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
+        var data = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]]) + Data([10])
+        data.append(Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"working\"}}\n".utf8))
+        for _ in 0..<64 { data.append(Data("{\"event\":\"workspace.future_event\"}\n".utf8)) }
+        data.append(Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"idle\"}}\n".utf8))
+        return [data]
+    }
+    defer { server.stop() }
+    var events: [HerdrEvent] = []
+    for try await event in HerdrClient(socketPath: server.path).events(paneIDs: ["w1:p1"]) { events.append(event) }
+    #expect(events == [.subscribed, .agentStatus(paneID: "w1:p1", status: .working),
+                       .agentStatus(paneID: "w1:p1", status: .idle)])
 }
 
 @Test func stoppingAnEventStreamClosesTheConnection() async throws {
@@ -222,11 +239,12 @@ func malformedEventEndsTheStreamInsteadOfSkippingATransition(line: String) async
 
 @Test(arguments: [-1, 0, 1])
 func newlineTerminatedResponsesEnforceTheExactBoundary(extraBytes: Int) async throws {
-    let size = SocketTransport.maximumLine + extraBytes
+    let limit = 32_768
+    let size = limit + extraBytes
     let server = try TestSocketServer { _ in [Data(repeating: 65, count: size) + Data([10])] }
     defer { server.stop() }
     do {
-        let response = try await SocketTransport(path: server.path).exchange(Data("request\n".utf8))
+        let response = try await SocketTransport(path: server.path).exchange(Data("request\n".utf8), maximumLine: limit)
         #expect(extraBytes <= 0)
         #expect(response.count == size)
     } catch HerdrError.responseTooLarge {
@@ -236,16 +254,18 @@ func newlineTerminatedResponsesEnforceTheExactBoundary(extraBytes: Int) async th
 
 @Test(arguments: [-1, 0, 1])
 func newlineTerminatedStreamLinesEnforceTheExactBoundary(extraBytes: Int) async throws {
-    let size = SocketTransport.maximumLine + extraBytes
+    let limit = 32_768
+    let size = limit + extraBytes
     let server = try TestSocketServer { _ in
         // Keep the newline in the final fragment, including the byte that crosses the limit.
-        [Data(repeating: 65, count: SocketTransport.maximumLine - 1),
+        [Data(repeating: 65, count: limit - 1),
          Data(repeating: 65, count: extraBytes + 1) + Data([10])]
     }
     defer { server.stop() }
     var count = 0
     do {
-        for try await line in SocketTransport(path: server.path).lines(Data("request\n".utf8)) {
+        for try await line in SocketTransport(path: server.path).lines(
+            Data("request\n".utf8), firstLineTimeout: nil, maximumLine: limit) {
             count += 1
             #expect(line.count == size)
         }
@@ -340,6 +360,39 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
     task.cancel()
     _ = try await task.value
     #expect(await signalled(server.clientClosed))
+}
+
+@Test func cancellingAOneShotRequestClosesTheSocketBeforeItsDeadline() async throws {
+    let server = try TestSocketServer(linger: 6_000_000) { _ in [] }
+    defer { server.stop() }
+    let finished = DispatchSemaphore(value: 0)
+    let task = Task {
+        defer { finished.signal() }
+        do {
+            _ = try await SocketTransport(path: server.path, timeout: 5).exchange(Data("request\n".utf8))
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {}
+    }
+    defer { task.cancel() }
+    try #require(await signalled(server.requestReceived))
+    task.cancel()
+    try #require(await signalled(finished))
+    try await task.value
+    #expect(await signalled(server.clientClosed))
+}
+
+@Test func anAlreadyCancelledRequestDoesNotConnect() async throws {
+    let server = try TestSocketServer { _ in [] }
+    defer { server.stop() }
+    let task = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        do {
+            _ = try await SocketTransport(path: server.path).exchange(Data("request\n".utf8))
+            Issue.record("Expected cancellation before connection")
+        } catch is CancellationError {}
+    }
+    try await task.value
+    #expect(!(await signalled(server.requestReceived, timeout: 0)))
 }
 
 @Test func aSingleWriteBurstOf64EventsPreservesEveryEventInOrder() async throws {

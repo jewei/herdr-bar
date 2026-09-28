@@ -62,6 +62,7 @@ public struct HerdrClient: HerdrService {
                             // Skipping malformed status frames would silently lose work
                             // transitions. End the subscription so the store resynchronizes.
                             guard let parsed = HerdrEvent(line: line) else { throw HerdrError.invalidResponse }
+                            if parsed == .ignored { continue }
                             event = parsed
                         } else {
                             // Herdr can reply to a failed subscription with a different ID.
@@ -136,6 +137,8 @@ public enum HerdrEvent: Equatable, Sendable {
     case agentStatus(paneID: String, status: AgentStatus)
     /// A pane, tab, or workspace changed. A new snapshot shows the change.
     case layoutChanged
+    /// A valid event that does not change the state this client uses.
+    case ignored
 
     /// Title changes (`pane.updated`) are not included, because they can occur many times each second.
     static let layoutTypes = [
@@ -143,6 +146,9 @@ public enum HerdrEvent: Equatable, Sendable {
         "tab.created", "tab.closed", "tab.renamed", "tab.moved",
         "workspace.created", "workspace.closed", "workspace.renamed", "workspace.moved", "workspace.reordered",
     ]
+    private static let layoutNames = Set(layoutTypes + layoutTypes.map { $0.replacingOccurrences(of: ".", with: "_") }
+        // Keep the prior snapshot fallback for known general status/layout events.
+        + ["pane_agent_status_changed", "layout.updated", "layout_updated"])
 
     init?(line: Data) {
         struct Header: Decodable { let event: String }
@@ -161,10 +167,12 @@ public enum HerdrEvent: Equatable, Sendable {
             guard let event = try? decoder.decode(StatusEvent.self, from: line),
                   !event.data.paneID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             self = .agentStatus(paneID: event.data.paneID, status: event.data.agentStatus)
-        } else {
+        } else if Self.layoutNames.contains(header.event) {
             // Layout payloads vary by event and are replaced by a snapshot anyway.
-            // Future named events also conservatively invalidate the local layout.
             self = .layoutChanged
+        } else {
+            // Unknown events must not suppress valid status transitions or force snapshots.
+            self = .ignored
         }
     }
 }

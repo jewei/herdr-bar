@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 public enum HerdrError: LocalizedError, Sendable {
     case unavailable(String)
@@ -37,10 +38,28 @@ public struct SocketTransport: Sendable {
     }
 
     public func exchange(_ request: Data) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            Self.queue.async {
-                continuation.resume(with: Result { try self.exchangeBlocking(request) })
+        try await exchange(request, maximumLine: Self.maximumLine)
+    }
+
+    /// An injectable limit lets framing tests exercise small boundary-sized replies.
+    func exchange(_ request: Data, maximumLine: Int) async throws -> Data {
+        let cancellation = RequestCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                Self.queue.async {
+                    do {
+                        let response = try self.exchangeBlocking(request, maximumLine: maximumLine,
+                                                                 cancellation: cancellation)
+                        try cancellation.checkCancellation()
+                        continuation.resume(returning: response)
+                    } catch {
+                        continuation.resume(throwing: cancellation.isCancelled ? CancellationError() : error)
+                    }
+                }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -63,13 +82,16 @@ public struct SocketTransport: Sendable {
         }
     }
 
-    private func exchangeBlocking(_ request: Data) throws -> Data {
+    private func exchangeBlocking(_ request: Data, maximumLine: Int,
+                                  cancellation: RequestCancellation) throws -> Data {
+        try cancellation.checkCancellation()
         let deadline = makeDeadline()
-        let fd = try connectAndSend(request, deadline: deadline)
-        defer { close(fd) }
+        let fd = try connectAndSend(request, deadline: deadline, cancellation: cancellation)
+        defer { cancellation.close(fd) }
         var response = Data()
         var buffer = [UInt8](repeating: 0, count: 16_384)
         while true {
+            try cancellation.checkCancellation()
             try wait(fd, events: Int16(POLLIN), deadline: deadline)
             let count = recv(fd, &buffer, buffer.count, 0)
             if count < 0 {
@@ -80,7 +102,7 @@ public struct SocketTransport: Sendable {
             // Search only the new bytes, so large fragmented responses stay linear.
             let chunk = buffer[..<count]
             let end = chunk.firstIndex(of: 10) ?? count
-            guard response.count + end <= Self.maximumLine else { throw HerdrError.responseTooLarge }
+            guard response.count + end <= maximumLine else { throw HerdrError.responseTooLarge }
             response.append(contentsOf: chunk[..<end])
             if end < count { return response }
         }
@@ -91,7 +113,8 @@ public struct SocketTransport: Sendable {
     }
 
     /// Returns a non-blocking socket that has sent the full request. The caller must close it.
-    func connectAndSend(_ request: Data, deadline: UInt64) throws -> Int32 {
+    fileprivate func connectAndSend(_ request: Data, deadline: UInt64,
+                                    cancellation: RequestCancellation? = nil) throws -> Int32 {
         var address = sockaddr_un()
         let pathBytes = Array(path.utf8) + [0]
         guard !path.utf8.contains(0), pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
@@ -105,11 +128,15 @@ public struct SocketTransport: Sendable {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw systemError() }
         do {
+            try cancellation?.install(fd)
             try connect(fd, to: &address, deadline: deadline)
+            try cancellation?.checkCancellation()
             try send(request, to: fd, deadline: deadline)
+            try cancellation?.checkCancellation()
             return fd
         } catch {
-            close(fd)
+            if let cancellation { cancellation.close(fd) }
+            else { close(fd) }
             throw error
         }
     }
@@ -165,6 +192,43 @@ public struct SocketTransport: Sendable {
 
     func systemError(_ code: Int32 = errno) -> HerdrError {
         .unavailable(String(cString: strerror(code)))
+    }
+}
+
+/// Cancellation shuts down the socket to wake a blocked read. Only the worker closes it.
+/// The lock prevents a late cancellation from touching a reused descriptor.
+fileprivate final class RequestCancellation: Sendable {
+    private struct State {
+        var descriptor: Int32?
+        var cancelled = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var isCancelled: Bool { state.withLock { $0.cancelled } }
+
+    func checkCancellation() throws {
+        if isCancelled { throw CancellationError() }
+    }
+
+    func install(_ descriptor: Int32) throws {
+        try state.withLock {
+            guard !$0.cancelled else { throw CancellationError() }
+            $0.descriptor = descriptor
+        }
+    }
+
+    func cancel() {
+        state.withLock {
+            $0.cancelled = true
+            if let descriptor = $0.descriptor { _ = shutdown(descriptor, SHUT_RDWR) }
+        }
+    }
+
+    func close(_ descriptor: Int32) {
+        state.withLock {
+            $0.descriptor = nil
+            _ = Darwin.close(descriptor)
+        }
     }
 }
 
@@ -251,10 +315,10 @@ private final class LineReader: @unchecked Sendable {
                 pending = Data()
                 start = newline + 1
             }
-            pending.append(contentsOf: buffer[start..<count])
-            guard pending.count <= maximumLine else {
+            guard pending.count + count - start <= maximumLine else {
                 return finish(HerdrError.responseTooLarge)
             }
+            pending.append(contentsOf: buffer[start..<count])
         }
     }
 

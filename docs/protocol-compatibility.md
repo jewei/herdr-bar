@@ -53,8 +53,8 @@ already-running server; this fixture pin is not a universal compatibility promis
   a close contains IDs, and a reorder contains workspace objects.
 - Status payloads are decoded strictly enough to require a nonempty pane ID and
   string status. Unknown string statuses become `.unknown`. Named layout and
-  otherwise unknown nonempty event names conservatively trigger a snapshot refresh;
-  their data shape is deliberately ignored. Malformed envelopes/status events fail
+  their underscore aliases trigger a snapshot refresh; their data shape is ignored.
+  Other nonempty event names are ignored without a refresh. Malformed envelopes/status events fail
   the stream with `invalidResponse`, rather than silently losing an update.
 
 `ProtocolFixtureTests` decodes the examples, checks move identity, compares all
