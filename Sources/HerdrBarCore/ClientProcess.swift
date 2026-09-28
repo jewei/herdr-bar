@@ -14,6 +14,39 @@ public enum ClientProcess {
         }
     }
 
+    /// Process enumeration, argument reads, symlink resolution, and parent walks can
+    /// block. Return only PIDs across the concurrency boundary; AppKit stays on main.
+    public static func applicationAncestors(socketPath: String) async -> [pid_t] {
+        await applicationAncestors(socketPath: socketPath,
+                                   find: { find(socketPath: $0) }, parent: { parent(of: $0) })
+    }
+
+    /// Injectable process reads keep scheduling and ancestry edge cases testable.
+    static func applicationAncestors(socketPath: String,
+                                     find: @escaping @Sendable (String) -> [pid_t],
+                                     parent: @escaping @Sendable (pid_t) -> pid_t?) async -> [pid_t] {
+        let discovery = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return [pid_t]() }
+            var result: [pid_t] = []
+            var emitted: Set<pid_t> = []
+            for client in find(socketPath) {
+                var visited: Set<pid_t> = [client]
+                var current = parent(client)
+                while let pid = current, visited.insert(pid).inserted {
+                    guard !Task.isCancelled else { return [] }
+                    if emitted.insert(pid).inserted { result.append(pid) }
+                    current = parent(pid)
+                }
+            }
+            return result
+        }
+        return await withTaskCancellationHandler {
+            await discovery.value
+        } onCancel: {
+            discovery.cancel()
+        }
+    }
+
     /// Uses `sysctl`, because `proc_pidinfo` fails for root processes such as `login`.
     public static func parent(of pid: pid_t) -> pid_t? {
         var info = kinfo_proc()

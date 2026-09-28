@@ -1,11 +1,13 @@
 import Darwin
 import Foundation
+import os
 
 public enum HerdrError: LocalizedError, Sendable {
     case unavailable(String)
     case timeout
     case invalidResponse
     case responseTooLarge
+    case streamOverflow
     case server(String)
 
     public var errorDescription: String? {
@@ -14,6 +16,7 @@ public enum HerdrError: LocalizedError, Sendable {
         case .timeout: "Herdr did not reply in time."
         case .invalidResponse: "Herdr sent an invalid response."
         case .responseTooLarge: "The Herdr response is too large."
+        case .streamOverflow: "Herdr events arrived too quickly. Reconnect and refresh the snapshot to resynchronize."
         case .server(let message): message
         }
     }
@@ -24,6 +27,8 @@ public struct SocketTransport: Sendable {
     public let path: String
     public let timeout: TimeInterval
     static let maximumLine = 8 * 1_024 * 1_024
+    // A count limit also bounds bytes, since every line is limited to maximumLine.
+    static let maximumBufferedLines = 8
     private static let queue = DispatchQueue(label: "dev.herdrbar.socket", qos: .utility,
                                              attributes: .concurrent)
 
@@ -33,31 +38,60 @@ public struct SocketTransport: Sendable {
     }
 
     public func exchange(_ request: Data) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            Self.queue.async {
-                continuation.resume(with: Result { try self.exchangeBlocking(request) })
+        try await exchange(request, maximumLine: Self.maximumLine)
+    }
+
+    /// An injectable limit lets framing tests exercise small boundary-sized replies.
+    func exchange(_ request: Data, maximumLine: Int) async throws -> Data {
+        let cancellation = RequestCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                Self.queue.async {
+                    do {
+                        let response = try self.exchangeBlocking(request, maximumLine: maximumLine,
+                                                                 cancellation: cancellation)
+                        try cancellation.checkCancellation()
+                        continuation.resume(returning: response)
+                    } catch {
+                        continuation.resume(throwing: cancellation.isCancelled ? CancellationError() : error)
+                    }
+                }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
     /// Sends one request on a connection that stays open, then returns each line that the server sends.
     /// The connect and the send have the usual timeout. The read has no timeout.
-    /// The connection closes when the stream ends or when the consumer stops the iteration.
+    /// The connection closes when the stream ends or its consumer is cancelled.
     public func lines(_ request: Data) -> AsyncThrowingStream<Data, any Error> {
-        AsyncThrowingStream { continuation in
-            let reader = LineReader(continuation: continuation)
+        lines(request, firstLineTimeout: nil)
+    }
+
+    /// Subscription handshakes have a deadline; subsequent quiet reads do not.
+    /// Smaller protocol-specific line limits allow more burst headroom without multiplying memory use.
+    func lines(_ request: Data, firstLineTimeout: TimeInterval?,
+               maximumLine: Int = Self.maximumLine,
+               maximumBufferedLines: Int = Self.maximumBufferedLines) -> AsyncThrowingStream<Data, any Error> {
+        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedLines)) { continuation in
+            let reader = LineReader(continuation: continuation, maximumLine: maximumLine)
             continuation.onTermination = { _ in reader.cancel() }
-            reader.start(transport: self, request: request)
+            reader.start(transport: self, request: request, firstLineTimeout: firstLineTimeout)
         }
     }
 
-    private func exchangeBlocking(_ request: Data) throws -> Data {
+    private func exchangeBlocking(_ request: Data, maximumLine: Int,
+                                  cancellation: RequestCancellation) throws -> Data {
+        try cancellation.checkCancellation()
         let deadline = makeDeadline()
-        let fd = try connectAndSend(request, deadline: deadline)
-        defer { close(fd) }
+        let fd = try connectAndSend(request, deadline: deadline, cancellation: cancellation)
+        defer { cancellation.close(fd) }
         var response = Data()
         var buffer = [UInt8](repeating: 0, count: 16_384)
         while true {
+            try cancellation.checkCancellation()
             try wait(fd, events: Int16(POLLIN), deadline: deadline)
             let count = recv(fd, &buffer, buffer.count, 0)
             if count < 0 {
@@ -68,7 +102,7 @@ public struct SocketTransport: Sendable {
             // Search only the new bytes, so large fragmented responses stay linear.
             let chunk = buffer[..<count]
             let end = chunk.firstIndex(of: 10) ?? count
-            guard response.count + end <= Self.maximumLine else { throw HerdrError.responseTooLarge }
+            guard response.count + end <= maximumLine else { throw HerdrError.responseTooLarge }
             response.append(contentsOf: chunk[..<end])
             if end < count { return response }
         }
@@ -79,7 +113,8 @@ public struct SocketTransport: Sendable {
     }
 
     /// Returns a non-blocking socket that has sent the full request. The caller must close it.
-    func connectAndSend(_ request: Data, deadline: UInt64) throws -> Int32 {
+    fileprivate func connectAndSend(_ request: Data, deadline: UInt64,
+                                    cancellation: RequestCancellation? = nil) throws -> Int32 {
         var address = sockaddr_un()
         let pathBytes = Array(path.utf8) + [0]
         guard !path.utf8.contains(0), pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
@@ -93,11 +128,15 @@ public struct SocketTransport: Sendable {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw systemError() }
         do {
+            try cancellation?.install(fd)
             try connect(fd, to: &address, deadline: deadline)
+            try cancellation?.checkCancellation()
             try send(request, to: fd, deadline: deadline)
+            try cancellation?.checkCancellation()
             return fd
         } catch {
-            close(fd)
+            if let cancellation { cancellation.close(fd) }
+            else { close(fd) }
             throw error
         }
     }
@@ -156,21 +195,61 @@ public struct SocketTransport: Sendable {
     }
 }
 
+/// Cancellation shuts down the socket to wake a blocked read. Only the worker closes it.
+/// The lock prevents a late cancellation from touching a reused descriptor.
+fileprivate final class RequestCancellation: Sendable {
+    private struct State {
+        var descriptor: Int32?
+        var cancelled = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var isCancelled: Bool { state.withLock { $0.cancelled } }
+
+    func checkCancellation() throws {
+        if isCancelled { throw CancellationError() }
+    }
+
+    func install(_ descriptor: Int32) throws {
+        try state.withLock {
+            guard !$0.cancelled else { throw CancellationError() }
+            $0.descriptor = descriptor
+        }
+    }
+
+    func cancel() {
+        state.withLock {
+            $0.cancelled = true
+            if let descriptor = $0.descriptor { _ = shutdown(descriptor, SHUT_RDWR) }
+        }
+    }
+
+    func close(_ descriptor: Int32) {
+        state.withLock {
+            $0.descriptor = nil
+            _ = Darwin.close(descriptor)
+        }
+    }
+}
+
 /// Reads lines from one long-lived connection. A dispatch source reports when data is ready,
 /// so no thread waits while the connection is quiet.
 /// All state belongs to `queue`. The descriptor closes only in the source's cancel handler.
 private final class LineReader: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.herdrbar.events", qos: .utility)
     private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
+    private let maximumLine: Int
     private var source: DispatchSourceRead?
+    private var handshakeTimer: DispatchSourceTimer?
     private var cancelled = false
     private var pending = Data()
 
-    init(continuation: AsyncThrowingStream<Data, any Error>.Continuation) {
+    init(continuation: AsyncThrowingStream<Data, any Error>.Continuation, maximumLine: Int) {
         self.continuation = continuation
+        self.maximumLine = maximumLine
     }
 
-    func start(transport: SocketTransport, request: Data) {
+    func start(transport: SocketTransport, request: Data, firstLineTimeout: TimeInterval?) {
         queue.async { [self] in
             guard !cancelled else { return }
             let fd: Int32
@@ -184,6 +263,13 @@ private final class LineReader: @unchecked Sendable {
             source.setEventHandler { [weak self] in self?.read(fd, transport: transport) }
             source.setCancelHandler { close(fd) }
             self.source = source
+            if let firstLineTimeout {
+                let timer = DispatchSource.makeTimerSource(queue: queue)
+                timer.schedule(deadline: .now() + max(0.001, firstLineTimeout))
+                timer.setEventHandler { [weak self] in self?.finish(HerdrError.timeout) }
+                handshakeTimer = timer
+                timer.resume()
+            }
             source.resume()
         }
     }
@@ -191,14 +277,16 @@ private final class LineReader: @unchecked Sendable {
     func cancel() {
         queue.async { [self] in
             cancelled = true
-            source?.cancel()
-            source = nil
+            finish(nil)
         }
     }
 
     private func read(_ fd: Int32, transport: SocketTransport) {
         var buffer = [UInt8](repeating: 0, count: 16_384)
-        while source != nil {
+        // Even a continuously readable socket must yield the queue to cancellation and timers.
+        // Count attempts, not just successful reads, so EINTR cannot monopolize the queue either.
+        for _ in 0..<16 {
+            guard source != nil else { return }
             let count = recv(fd, &buffer, buffer.count, 0)
             if count < 0 {
                 if errno == EINTR { continue }
@@ -208,19 +296,35 @@ private final class LineReader: @unchecked Sendable {
             guard count > 0 else { return finish(nil) }
             var start = 0
             while let newline = buffer[start..<count].firstIndex(of: 10) {
+                guard pending.count + newline - start <= maximumLine else {
+                    return finish(HerdrError.responseTooLarge)
+                }
                 pending.append(contentsOf: buffer[start..<newline])
-                continuation.yield(pending)
+                handshakeTimer?.cancel()
+                handshakeTimer = nil
+                switch continuation.yield(pending) {
+                case .enqueued: break
+                case .dropped:
+                    // Losing a line would silently corrupt the event sequence.
+                    return finish(HerdrError.streamOverflow)
+                case .terminated:
+                    return finish(nil)
+                @unknown default:
+                    return finish(HerdrError.invalidResponse)
+                }
                 pending = Data()
                 start = newline + 1
             }
-            pending.append(contentsOf: buffer[start..<count])
-            guard pending.count <= SocketTransport.maximumLine else {
+            guard pending.count + count - start <= maximumLine else {
                 return finish(HerdrError.responseTooLarge)
             }
+            pending.append(contentsOf: buffer[start..<count])
         }
     }
 
     private func finish(_ error: (any Error)?) {
+        handshakeTimer?.cancel()
+        handshakeTimer = nil
         continuation.finish(throwing: error)
         source?.cancel()
         source = nil

@@ -11,6 +11,11 @@ public protocol HerdrService: Sendable {
 public struct HerdrClient: HerdrService {
     public let socketPath: String
     private let transport: SocketTransport
+    static let maximumBufferedEvents = 256
+    // These subscriptions carry identifiers and status/layout notifications, not snapshots.
+    // 64 KiB leaves generous metadata headroom while bounding 256 queued wire lines to 16 MiB.
+    // Decoded events retain at most a pane identifier, so their buffer has the same byte ceiling.
+    static let maximumEventLine = 64 * 1_024
 
     public init(socketPath: String = SocketLocation.resolve(), timeout: TimeInterval = 2) {
         self.socketPath = socketPath
@@ -30,6 +35,12 @@ public struct HerdrClient: HerdrService {
     /// The first element is `.subscribed`. Herdr accepts one subscription on each connection,
     /// so a new set of panes needs a new stream.
     public func events(paneIDs: [String]) -> AsyncThrowingStream<HerdrEvent, any Error> {
+        events(paneIDs: paneIDs, maximumBufferedEvents: Self.maximumBufferedEvents)
+    }
+
+    /// Tests can fill the decoded queue without racing the separate wire-line queue.
+    func events(paneIDs: [String], maximumBufferedEvents: Int) -> AsyncThrowingStream<HerdrEvent, any Error> {
+        precondition(maximumBufferedEvents > 0)
         let id = UUID().uuidString
         let subscriptions = paneIDs.map { Subscription(type: "pane.agent_status_changed", paneID: $0) }
             + HerdrEvent.layoutTypes.map { Subscription(type: $0, paneID: nil) }
@@ -38,27 +49,44 @@ public struct HerdrClient: HerdrService {
             var data = try JSONEncoder().encode(SubscribeRequest(
                 id: id, method: "events.subscribe", params: .init(subscriptions: subscriptions)))
             data.append(10)
-            lines = transport.lines(data)
+            lines = transport.lines(data, firstLineTimeout: transport.timeout,
+                                    maximumLine: Self.maximumEventLine,
+                                    maximumBufferedLines: Self.maximumBufferedEvents)
         } catch {
-            return AsyncThrowingStream { $0.finish(throwing: error) }
+            return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedEvents)) {
+                $0.finish(throwing: error)
+            }
         }
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedEvents)) { continuation in
             let task = Task {
                 do {
                     var started = false
                     for try await line in lines {
+                        try Task.checkCancellation()
+                        let event: HerdrEvent
                         if started {
-                            if let event = HerdrEvent(line: line) { continuation.yield(event) }
-                            continue
+                            // Skipping malformed status frames would silently lose work
+                            // transitions. End the subscription so the store resynchronizes.
+                            guard let parsed = HerdrEvent(line: line) else { throw HerdrError.invalidResponse }
+                            if parsed == .ignored { continue }
+                            event = parsed
+                        } else {
+                            // Herdr can reply to a failed subscription with a different ID.
+                            guard let reply = try? JSONDecoder().decode(Response<StartResult>.self, from: line)
+                            else { throw HerdrError.invalidResponse }
+                            if let error = reply.error { throw HerdrError.server(error.message) }
+                            guard reply.id == id, reply.result != nil else { throw HerdrError.invalidResponse }
+                            started = true
+                            event = .subscribed
                         }
-                        // Herdr can reply to a failed subscription with a different ID.
-                        guard let reply = try? JSONDecoder().decode(Response<StartResult>.self, from: line)
-                        else { throw HerdrError.invalidResponse }
-                        if let error = reply.error { throw HerdrError.server(error.message) }
-                        guard reply.id == id, reply.result != nil else { throw HerdrError.invalidResponse }
-                        started = true
-                        continuation.yield(.subscribed)
+                        switch continuation.yield(event) {
+                        case .enqueued: break
+                        case .dropped: throw HerdrError.streamOverflow
+                        case .terminated: return
+                        @unknown default: throw HerdrError.invalidResponse
+                        }
                     }
+                    guard started else { throw HerdrError.invalidResponse }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -115,6 +143,8 @@ public enum HerdrEvent: Equatable, Sendable {
     case agentStatus(paneID: String, status: AgentStatus)
     /// A pane, tab, or workspace changed. A new snapshot shows the change.
     case layoutChanged
+    /// A valid event that does not change the state this client uses.
+    case ignored
 
     /// Title changes (`pane.updated`) are not included, because they can occur many times each second.
     static let layoutTypes = [
@@ -122,23 +152,33 @@ public enum HerdrEvent: Equatable, Sendable {
         "tab.created", "tab.closed", "tab.renamed", "tab.moved",
         "workspace.created", "workspace.closed", "workspace.renamed", "workspace.moved", "workspace.reordered",
     ]
+    private static let layoutNames = Set(layoutTypes + layoutTypes.map { $0.replacingOccurrences(of: ".", with: "_") }
+        // Keep the prior snapshot fallback for known general status/layout events.
+        + ["pane_agent_status_changed", "layout.updated", "layout_updated"])
 
     init?(line: Data) {
-        struct Envelope: Decodable {
-            let event: String
-            let data: Body?
+        struct Header: Decodable { let event: String }
+        struct StatusEvent: Decodable {
+            struct Body: Decodable {
+                let paneID: String
+                let agentStatus: AgentStatus
+                enum CodingKeys: String, CodingKey { case paneID = "pane_id", agentStatus = "agent_status" }
+            }
+            let data: Body
         }
-        struct Body: Decodable {
-            let paneID: String?
-            let agentStatus: AgentStatus?
-            enum CodingKeys: String, CodingKey { case paneID = "pane_id", agentStatus = "agent_status" }
-        }
-        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: line) else { return nil }
-        if envelope.event == "pane.agent_status_changed" {
-            guard let paneID = envelope.data?.paneID, let status = envelope.data?.agentStatus else { return nil }
-            self = .agentStatus(paneID: paneID, status: status)
-        } else {
+        let decoder = JSONDecoder()
+        guard let header = try? decoder.decode(Header.self, from: line),
+              !header.event.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if header.event == "pane.agent_status_changed" {
+            guard let event = try? decoder.decode(StatusEvent.self, from: line),
+                  !event.data.paneID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            self = .agentStatus(paneID: event.data.paneID, status: event.data.agentStatus)
+        } else if Self.layoutNames.contains(header.event) {
+            // Layout payloads vary by event and are replaced by a snapshot anyway.
             self = .layoutChanged
+        } else {
+            // Unknown events must not suppress valid status transitions or force snapshots.
+            self = .ignored
         }
     }
 }
