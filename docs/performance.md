@@ -46,3 +46,24 @@ measures process discovery only; it does not activate a terminal.
 Do not drop status transitions to reduce render cost. If measurements establish
 a bottleneck, combine presentation updates while retaining transition processing
 and the snapshot validation needed before attention effects are committed.
+
+## Quiet-state baseline — 2026-09-28
+
+Source `a32e893a7b482bd35a383875238d42df757c2dea`, release configuration, macOS
+27.0 arm64, Herdr 0.9.1. A separate named test server had one synthetic idle
+agent and no attached terminal client. The unbundled app executable ran with
+the popover closed and notifications disabled. A local forwarding socket counted
+requests without changing their contents. After startup, the sample lasted
+60.23 seconds. See the [raw counters](performance-baseline.json).
+
+| Process | CPU, one core = 100% | Interrupt wakeups | Largest sampled resident memory |
+| --- | --- | --- | --- |
+| Herdr Bar | 0.0066% | 9 | 48.4 MiB |
+| Herdr server | 0.3853% | 1,087 | 22.2 MiB |
+
+The app sent three snapshot requests during the sample. There was no new
+subscription request. The test app/server were removed afterward; installed app
+preferences were unchanged. This is one quiet-state baseline, not a claim about
+event bursts, large agent lists, open-popover behavior, activation latency, or
+the exact peak memory of a distributed bundle. The remaining workload cases
+above still need measurement before performance changes are justified.

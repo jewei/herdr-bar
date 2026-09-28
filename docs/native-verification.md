@@ -8,6 +8,9 @@ The new cases cover delayed topology notices, independently advancing subscripti
 cursors and snapshots, stale event cycles, provisional notification suppression,
 and invalid success response types. Packaging and release-script mocks passed,
 including preservation of the previous artifact after an optimized-test failure.
+The release executable also connected to an isolated Herdr 0.9.1 server for the
+[joint app/server quiet-state sample](performance.md). The original installed app
+and its preferences were not changed.
 
 These checks exercise the second review's code changes. The earlier interactive
 results below apply to their recorded candidate. They do not establish a new
