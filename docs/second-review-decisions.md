@@ -3,7 +3,7 @@
 Two fresh agents independently checked all seven sections of the second review.
 Both confirmed the two reported defects. Both also reproduced or identified
 adjacent cases in the same state and protocol contracts. The review examined
-`5c40c78`; later native verification and the owner's VoiceOver exclusion are
+`5c40c78`; later native verification and the owner's release-check exclusions are
 recorded separately in [native verification](native-verification.md).
 
 | Review item | Decision and change |
@@ -16,9 +16,9 @@ recorded separately in [native verification](native-verification.md).
 | 5. Architecture | Agree. Keep the package split, service boundary, and store. Use bounded committed/provisional state in the tracker. Give topology invalidation and transport-history gaps distinct inputs and document their effects. |
 | 6. Timing tests | Agree. Add status-before-layout, complete-cycle-before-layout, unchanged-sequence delayed events, changed-mapping snapshots, and unread-move controls. Add an integration model with independent subscription positions and held snapshot replies. |
 | 6. Optimized tests | Agree. Run `swift test -c release` in CI and the pinned-source release script in addition to debug tests. Test that a failed optimized suite preserves the previous release artifact. |
-| 6. Runtime support | Agree. Compilation and metadata do not establish support on the oldest OS. Keep macOS 14 and real logout/login checks open. Only built and verified architectures may be distributed. |
+| 6. Runtime support | Agree. Compilation and metadata do not establish support on the oldest OS. macOS 14 and real logout/login checks are skipped for 1.0.1 by owner request; they were not performed. Only built and verified architectures may be distributed. |
 | 7. Release process | Agree. Retain the existing fixed-source build, signing, notarization, provenance, and rollback design. Native results are evidence for their recorded candidate, not every later build. |
-| 7. Documentation and UI checks | Agree. Distinguish arrival order from server chronology. Preserve completed native keyboard, notification, terminal, reconnect, contrast, and long-label evidence. VoiceOver is skipped by owner request. Larger-text and login-startup checks remain open. No new license grant or broad UI redesign is needed. |
+| 7. Documentation and UI checks | Agree. Distinguish arrival order from server chronology. Preserve completed native keyboard, notification, terminal, reconnect, contrast, and long-label evidence. VoiceOver, larger-text, and login-startup checks are skipped for 1.0.1 by owner request. No new license grant or broad UI redesign is needed. |
 
 ## Additional findings
 

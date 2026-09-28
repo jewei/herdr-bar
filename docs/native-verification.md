@@ -1,5 +1,20 @@
 # Native verification
 
+## Release 1.0.1 check exclusions — 2026-09-28
+
+The owner requested that these checks be skipped for release 1.0.1:
+
+| Check | Status |
+| --- | --- |
+| VoiceOver navigation and speech | Skipped by owner request; speech verification did not complete. |
+| Larger-text use | Skipped by owner request; not performed. |
+| Real logout/login startup | Skipped by owner request; registration was checked, but startup after login was not. |
+| Runtime execution on macOS 14 | Skipped by owner request; not performed. |
+
+These checks are excluded from the release 1.0.1 requirements. They are not
+recorded as passed. The recorded test results and runtime limits below remain
+unchanged. The repeatable checklist remains available for future releases.
+
 ## Second review checks — 2026-09-28
 
 On macOS 27.0 arm64 with Swift 6.4, both `swift test` and
@@ -14,8 +29,8 @@ and its preferences were not changed.
 
 These checks exercise the second review's code changes. The earlier interactive
 results below apply to their recorded candidate. They do not establish a new
-full GUI or supported-OS verification run. VoiceOver remains skipped by owner
-request; larger text, real logout/login, and macOS 14 execution remain open.
+full GUI or supported-OS verification run. VoiceOver, larger text, real
+logout/login, and macOS 14 execution are skipped as recorded above.
 
 ## Interactive release check — 2026-09-28
 
@@ -46,11 +61,10 @@ setting, app preferences, and the installed app were restored after the check.
 macOS notification permission remains granted; the app's original notification
 preference was restored separately.
 
-The remaining release checks are larger-text use, a real logout/login cycle,
-and execution on the oldest supported macOS version. The logout test needs a
-separate session because it would close current work. Only `arm64` is distributed
-by this candidate; these results do not establish Intel support. No release was
-published during this check.
+Larger-text use, a real logout/login cycle, and execution on the oldest supported
+macOS version were not checked and are now skipped for release 1.0.1 by owner
+request. Only `arm64` is distributed by this candidate; these results do not
+establish Intel support. No release was published during this check.
 
 ## Independent review follow-up — 2026-09-28
 
