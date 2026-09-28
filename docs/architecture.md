@@ -1,89 +1,135 @@
 # State and task ownership
 
-`HerdrBarCore` contains protocol models, the socket client, process discovery,
-and `AttentionTracker`. `HerdrBar` contains AppKit and SwiftUI presentation.
-`HerdrService` lets tests replace socket requests with controlled responses.
+Herdr Bar uses agent identity and snapshot validation to keep completion state
+correct when events arrive late or panes move. `HerdrBarCore` contains the
+protocol models, socket client, process discovery, and `AttentionTracker`.
+`HerdrBar` contains the AppKit and SwiftUI code. Tests replace socket requests
+with controlled responses through `HerdrService`.
 
-## Identity and attention
+## Agent identity
 
 An agent identity contains the terminal ID, agent kind, and agent session.
-A pane ID is a routing address. It can change when the agent moves.
-Each observed attention occurrence has a local generation. A row acknowledgement
-must match both identity and generation in the tracker. Thus, a pending focus
-action cannot clear a newer completion. Notifications use the same identity and
-generation, plus a connection scope.
+A pane ID is a routing address that can change when the agent moves.
+Unread state follows the agent identity across workspace moves.
 
-The tracker is a pure state reducer with two bounded state records per identity:
-committed state from snapshots and a provisional reduction of pane-addressed
-events. It processes accepted events in their received order. This is not global
-server chronology: different subscription selectors have independent history
-positions, and snapshot replies travel on another connection.
+Each attention occurrence has a local generation number. An acknowledgement
+must match both the identity and generation in `AttentionTracker`. A pending
+focus action therefore cannot clear a newer completion, even without
+`state_change_seq`. Notifications use the same identity and generation, plus a
+connection scope.
 
-Provisional Running/Unknown activity can appear immediately. Attention states,
-notifications, and acknowledgements use committed state. Meaningful provisional
-work blocks acknowledgement of an older row until reconciliation. It cannot
-erase established unread attention if its address later proves unreliable.
-Snapshot-only `working` to `idle` and explicit `done` still create completion.
+## Completion policy
 
-An event-only cycle needs the same identity and address, an advancing known
-sequence, and a matching final status in a snapshot. An unchanged sequence cannot
-confirm queued old events. Missing sequence data cannot validate an event-only
-cycle. Several cycles before validation produce one latest occurrence, not a
-promise of a notice per raw cycle. The reducer keeps bounded state rather than
-an unbounded transition history.
+**Done** is unread state local to the running Herdr Bar instance. An explicit
+`done` status in a snapshot creates a completion. A snapshot transition from
+`working` to `idle` for the same agent also creates a completion.
 
-## Refresh and lifecycle
+A successful open or **Mark completed agents as read** acknowledges the
+completion. An acknowledgement in another Herdr client does not clear it.
+Confirmed new work, a blocked or unknown state, agent replacement, or agent
+removal supersedes an old completion. Opening a blocked agent leaves its blocked
+state unchanged. App restarts and connection changes clear local unread state.
 
-`AgentStore` owns polling, polling sleep, the event consumer, active refresh,
-delayed refresh, and focus tasks. A pending flag requests one later refresh.
-`stop()` cancels these tasks and advances the connection generation.
-Changing the socket also advances the generation. Work from an earlier
-generation cannot publish into the current connection. A new connection or
-restart does not wait for an obsolete request.
+`AttentionTracker` computes new state without external effects. It keeps two
+bounded records per identity: committed state from snapshots and provisional
+state from events that identify a pane. Events update the provisional state in
+arrival order. That order does not establish server chronology because
+subscription selectors have separate history positions. Snapshot replies arrive
+on a separate connection.
 
-During a snapshot request, the store records which panes received status events.
-Overlap alone proves neither freshness nor identity. Provisional evidence can
-wait for a later snapshot when the current reply has not yet confirmed it.
-An incompatible authoritative transition, sequence reset, changed identity, or
-changed address discards the candidate. A layout event invalidates snapshot
-membership. The store discards that reply and tries again. After three consecutive
-layout invalidations it yields to the delayed refresh task; it never forces that
-reply into the state.
+Provisional **Running** or **Unknown** activity can appear immediately.
+Attention states, notifications, and acknowledgements use committed state.
+Provisional work can block acknowledgement of an older row until snapshot
+validation. Provisional events cannot clear confirmed unread attention if the
+pane address later proves unreliable.
 
-Topology invalidation removes provisional observations already received and
-quarantines later pane-only events until a fresh snapshot. Established unread
-state follows the stable identity across a move. A transport-history gap is a
-separate reducer input; unvalidated observations are removed, while committed
-state remains available for recovery. An advanced explicit completion sequence
-can conservatively generate another notice after a gap.
+An event-only work cycle requires all of these conditions before it creates a
+completion:
 
-This protocol cannot prove every short-lived address-to-identity relationship.
-Moving away and back between snapshots may leave no visible mapping change.
-Conservative reconciliation can miss short tasks and delay attention; it does
-not establish lossless event history. See the [protocol ordering notes](protocol-compatibility.md).
+- The snapshot confirms the same agent identity and pane address.
+- The snapshot contains a known sequence that has advanced.
+- The snapshot's final status matches the event cycle.
 
-## Transport and effects
+An unchanged sequence cannot validate old events. Missing sequence data cannot
+validate an event-only cycle. Several cycles before validation produce at most
+the latest confirmed notification. The tracker stores bounded state instead of
+a full transition history.
 
-Both event queues have fixed count limits. A fixed line limit also bounds their
-queued wire payload. Overflow, malformed status frames, or oversized lines end
-the subscription and cause polling and resynchronization. Unknown event names
-are ignored. Known layout names accept their documented compatibility aliases.
+## Snapshot validation
 
-Successful responses require the method's discriminator: `session_snapshot`,
-`ok`, or `subscription_started`. Correlation and error checks remain in place;
-unknown additive fields do not invalidate a correctly typed response.
+During a snapshot request, `AgentStore` records which panes receive status events.
+An overlapping event does not prove that the reply is current or identifies the
+same agent. Provisional state can wait for a later snapshot if the current reply
+does not confirm it.
 
-One-shot requests have total deadlines. Cancellation shuts down the owned socket
-to wake a pending read; the worker closes it. A lock prevents late cancellation
-from shutting down a descriptor that the operating system has reused.
-The event reader limits work per dispatch callback. Its handshake has a deadline;
-an established stream can remain quiet indefinitely.
+An incompatible snapshot transition, sequence reset, changed identity, or
+changed address discards the provisional state. A snapshot can reveal a changed
+identity or address before the layout event arrives.
 
-Live polling sleeps until the next 15-second title refresh. Polling fallback uses
-two seconds. Failed snapshot connections increase their retry delay up to
-30 seconds. Stream changes and explicit refreshes wake the scheduler.
+A layout event invalidates any active snapshot request. The store discards the
+reply and retries. After three consecutive layout invalidations, the delayed
+refresh task handles the next attempt. The store never accepts an invalid reply
+because it reached the retry limit.
+
+A layout change also removes provisional events and blocks later pane-only
+events until a fresh snapshot arrives. Confirmed unread state follows the agent
+identity across a move.
+
+## Recovery limits
+
+A gap in event history is a separate input to the tracker. It removes
+unvalidated events and retains committed state for recovery. After a gap, an
+advanced explicit completion sequence can produce a duplicate notification.
+
+Missing sequences, uncertain pane mappings, polling, and stream gaps can hide
+short work cycles. A snapshot cannot recover lost history. A move away and back
+between snapshots can leave no visible change in the pane mapping.
+
+A changed identity or a regressing sequence identifies a server restart.
+The client cannot reliably detect a restart that reuses identical identities
+without sequences. These protocol limits can delay attention or lose a short
+completion. The [protocol ordering notes](protocol-compatibility.md#event-order)
+describe the server behavior.
+
+## Task lifetime
+
+`AgentStore` owns polling, polling sleep, event consumption, active refresh,
+delayed refresh, and focus tasks. A pending flag combines refresh requests into
+one later refresh.
+
+`stop()` cancels the tasks and advances the connection generation.
+Changing the socket also advances that generation. Work from an earlier
+generation cannot update the current connection. A new connection or restart
+does not wait for an obsolete request.
+
+Live polling sleeps until the next title refresh, at a 15-second interval.
+Polling without an event stream uses a two-second interval. Failed snapshot
+connections increase the retry delay up to 30 seconds. Stream changes and
+explicit refreshes wake the scheduler.
+
+## Transport and external effects
+
+Both event queues have count limits. A line size limit also bounds the queued
+wire data. Overflow, malformed status frames, and oversized lines end the
+subscription. The store then uses polling and requests a snapshot to restore
+current state.
+
+The client ignores valid unknown event names. Known layout names accept their
+documented aliases. Successful responses require the expected response type,
+a matching request ID, and no error. Extra metadata fields remain valid.
+The [protocol reference](protocol-compatibility.md) records the exact types and
+size limits.
+
+One-shot requests have total deadlines. Cancellation shuts down the request's
+socket to wake a pending read. The worker then closes the socket. A lock prevents
+late cancellation from shutting down a descriptor that the OS has reused.
+
+The event reader limits work per dispatch callback. Its subscription
+acknowledgement has a deadline. An established stream can remain quiet
+indefinitely.
 
 Terminal process discovery runs outside the main actor. AppKit lookup and
-activation remain on the main actor. The store checks its generation again after
-activation. Notification delivery, terminal activation, and polling sleep have
-narrow test boundaries. No PID cache or general injection framework is needed.
+activation run on the main actor. The store checks its connection generation
+again after activation. Tests can replace notification delivery, terminal
+activation, and polling sleep. The design has no PID cache or general dependency
+injection framework.

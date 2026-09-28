@@ -1,10 +1,15 @@
 # Herdr protocol compatibility
 
-## Fixture provenance
+Herdr Bar uses `session.snapshot`, `agent.focus`, and `events.subscribe`.
+Snapshot `state_change_seq` is optional. The public
+[Herdr socket API](https://herdr.dev/docs/socket-api/) describes the protocol.
+The fixtures below record compatibility with a specific Herdr version.
 
-The fixtures in `Tests/HerdrBarCoreTests/Fixtures/` are pinned to **Herdr 0.9.1,
-protocol 22, schema version 1**. On 2026-09-25 UTC, the installed executable was
-located at `/opt/homebrew/bin/herdr`. Only these offline Herdr commands were run:
+## Fixture source
+
+The files in `Tests/HerdrBarCoreTests/Fixtures/` use Herdr 0.9.1, protocol 22,
+and schema version 1. The installed executable was `/opt/homebrew/bin/herdr`
+on 2026-09-25 UTC. The fixture export used these offline commands:
 
 ```sh
 /opt/homebrew/bin/herdr --version
@@ -13,107 +18,135 @@ located at `/opt/homebrew/bin/herdr`. Only these offline Herdr commands were run
 shasum -a 256 /tmp/herdr-bar-protocol-schema.json
 ```
 
-The exact schema stdout was 276,851 bytes; its SHA-256 was:
+The schema output contained 276,851 bytes. Its SHA-256 was:
 
 ```text
 226d4ecbd128d2e6bc84e4c8ddcec21ba9c7e51a0aafffcf087111ead3f1fa9a
 ```
 
-`herdr-0.9.1-schema-excerpt.json` retains 23 selected, unchanged schema nodes.
-Each `excerpts` key is its original JSON Pointer into that stdout document.
-Whitespace is compacted; references are not rewritten and may point outside the
-excerpt. This is provenance and a focused compatibility reference, **not a complete
-standalone JSON Schema**. The full 270 KiB schema is intentionally not vendored.
-Its hash identifies the source bytes, not the executable or the compact excerpt.
+`herdr-0.9.1-schema-excerpt.json` retains selected schema nodes without changes
+to their values. Each `excerpts` key is the original JSON Pointer into the
+exported document. The excerpt compacts whitespace but preserves references,
+including references outside the excerpt. It is not a complete, standalone JSON
+Schema. The full schema is absent from the repository. The hash identifies the
+exported bytes, not the executable or excerpt.
 
-`herdr-0.9.1-examples.json` contains **synthetic schema-derived examples**, not wire
-captures. All IDs, titles, paths, state sequences and session values are invented.
-It includes snapshots before/after a cross-workspace move, the move notification,
-other layout notifications, all five agent status values, a subscription request
-and its acknowledgement. No live socket was queried and no user session was
-inspected or modified. The CLI version does not establish the version of any
-already-running server; this fixture pin is not a universal compatibility promise.
+`herdr-0.9.1-examples.json` contains synthetic examples derived from the schema.
+The IDs, titles, paths, state sequences, and session values are invented.
+The examples include these messages:
 
-## Wire details covered
+- Snapshots before and after a move between workspaces
+- The move event and other layout events
+- Each agent status value
+- A subscription request and its acknowledgement
 
-- `session.snapshot` returns `result.type = "session_snapshot"` and
-  `result.snapshot`. Real snapshots include `protocol`, panes and layouts in
-  addition to the fields Herdr Bar consumes. Extra fields are ignored by decoding.
-- `agent.focus` succeeds only with `result.type = "ok"`. Each of the three client
-  methods requires its expected result type; a matching request ID alone does
-  not establish success.
-- `terminal_id` and `agent_session` identify the same agent across a move, while
-  `pane_id`, `workspace_id` and `tab_id` change. The move event exposes
-  `previous_pane_id` and the new `pane.pane_id`; use the new routing address.
-- `events.subscribe` takes `params.subscriptions`. Status subscriptions require
-  `type: "pane.agent_status_changed"` and `pane_id`; omitting the optional
-  `agent_status` filter requests every status. Layout subscriptions need only
-  their `type` selector. Acceptance returns `result.type = "subscription_started"`.
-- Subscription selectors use dots (`pane.moved`), but the general event schema
-  uses underscores (`pane_moved`). Status subscription notifications instead use
-  the dotted `pane.agent_status_changed`, with `data.pane_id` and
-  `data.agent_status`. General event payloads vary: a move contains a nested pane,
-  a close contains IDs, and a reorder contains workspace objects.
-- Status payloads are decoded strictly enough to require a nonempty pane ID and
-  string status. Unknown string statuses become `.unknown`. Named layout and
-  their underscore aliases trigger a snapshot refresh; their data shape is ignored.
-  Other nonempty event names are ignored without a refresh. Malformed envelopes/status events fail
-  the stream with `invalidResponse`, rather than silently losing an update.
+The export did not query a live socket or inspect or change a user session.
+The CLI version does not establish the version of a running server.
+These fixtures apply to the recorded schema version.
 
-`ProtocolFixtureTests` decodes the examples, checks move identity, compares all
-emitted subscription fields (apart from the generated correlation ID) with the
-pinned request, and checks selectors/required fields/string types against the
-schema excerpt. The stream test uses an isolated temporary mock UNIX socket,
-never the installed Herdr session. Separate in-test mutations exercise future
-status names and arbitrary layout data; these are compatibility probes, **not**
-claims about payloads emitted by 0.9.1. These focused tests are not a general
-JSON Schema validator or live-server conformance suite.
+## Requests and responses
 
-## Event order is local to each subscription
+The client requires these response types:
 
-Herdr 0.9.1 [polls selectors in request order](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/server.rs#L752).
-Its status and layout selectors have
+| Method | Required `result.type` | Response data |
+| --- | --- | --- |
+| `session.snapshot` | `session_snapshot` | `result.snapshot` |
+| `agent.focus` | `ok` | Focus acknowledgement |
+| `events.subscribe` | `subscription_started` | Subscription acknowledgement |
+
+A matching request ID alone does not establish success. The client also checks
+errors and the response type. Decoding accepts extra fields. Real snapshots
+include `protocol`, panes, and layouts beyond the fields Herdr Bar uses.
+
+Across a move, `terminal_id` and `agent_session` identify the same agent.
+The `pane_id`, `workspace_id`, and `tab_id` change. A move event contains
+`previous_pane_id` and the new routing address in `pane.pane_id`.
+
+`events.subscribe` takes `params.subscriptions`. A status subscription requires
+`type: "pane.agent_status_changed"` and `pane_id`. Without the optional
+`agent_status` filter, it requests every status. A layout subscription requires
+only its `type` selector.
+
+## Event decoding
+
+Subscription selectors use dots, as in `pane.moved`. The general event schema
+uses underscores, as in `pane_moved`. Status subscription notifications use
+`pane.agent_status_changed`, with `data.pane_id` and `data.agent_status`.
+
+General event payloads differ by event. A move contains a nested pane, a close
+contains IDs, and a reorder contains workspace objects. Known layout names and
+their underscore aliases trigger a snapshot refresh. The client ignores their
+data shape.
+
+Status payloads require a nonempty pane ID and a string status. Unknown string
+statuses decode as `.unknown`. Other valid, nonempty event names cause no refresh.
+Malformed event envelopes or status events fail the stream with
+`invalidResponse`.
+
+## Event order
+
+Herdr 0.9.1
+[polls selectors in request order](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/server.rs#L752).
+Status and layout selectors have
 [independent history positions](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/subscriptions.rs#L283).
 A status selector can skip a move and emit a later status before the layout
-selector reports the move. A separate snapshot response has no shared stream
-watermark. Changing selector order does not establish a global ordering contract.
+selector reports the move. A snapshot response has no shared stream position.
+Selector order does not establish global event order.
 
-Status events supply an address and status, without a stable terminal/session
-identity or sequence watermark. The reducer therefore separates provisional
-observations from snapshot-confirmed attention effects. An unchanged sequence
-cannot validate a delayed cycle. Changed mappings discard provisional evidence
-while retaining established unread state by identity. With no sequence, an
-event-only completion is not committed. A move away and back between snapshots
-can remain ambiguous; exact recovery of every short cycle is not guaranteed.
+Status events contain an address and status. They contain neither a stable
+agent identity nor a sequence marker shared with snapshots. Herdr Bar keeps
+these provisional events separate from snapshot-confirmed attention state.
 
-`SubscriptionOrderingTests` models one chronological history with separate
-status/layout cursors and independently held snapshot replies. It covers status
-before layout and a new snapshot before the delayed layout event. This is a
-controlled store/reducer integration model, not a live-server conformance test.
+An unchanged sequence cannot validate a delayed cycle. A changed pane mapping
+discards provisional events and retains confirmed unread state by identity.
+Without a sequence, an event-only cycle cannot create a completion. A move away
+and back between snapshots can remain undetected. The client cannot recover
+every short cycle.
 
-## Event size is a client policy
+## Client limits
 
-Herdr Bar caps an incoming event-stream line at **64 KiB (65,536 bytes, excluding
-the newline delimiter)**, including the subscription acknowledgement. This is a
-**client resource limit, not a server guarantee**. The pinned schema provides no
-overall serialized-event byte ceiling. Layout events can include full pane or
-workspace objects and arrays, while titles, labels and status metadata strings
-are not given a general length bound. Therefore even a schema-valid event can
-exceed this cap. The compact fixtures do not establish a maximum event size.
+The client applies these limits:
 
-An oversized line fails with `responseTooLarge`; queue overflow fails with
-`streamOverflow`. Consumers must reconnect/resnapshot rather than assume every
-notification was delivered. The queue bound of 256 and the per-line cap bound
-queued wire payload, not total process memory (which also includes buffers,
-decoded objects and allocation overhead).
+| Data | Limit |
+| --- | --- |
+| Event stream line, including the subscription acknowledgement | 64 KiB, or 65,536 bytes, excluding the newline |
+| Each event queue | 256 lines or events |
+| Snapshot response line | 8 MiB |
 
-Run the focused suite with:
+The schema specifies no overall event size limit. Layout events can contain
+full pane or workspace objects and arrays. Titles, labels, and status metadata
+strings have no general length bound. A valid event can therefore exceed the
+client's line limit.
 
-```sh
-swift test --filter ProtocolFixtureTests
-```
+An oversized line fails with `responseTooLarge`. Queue overflow fails with
+`streamOverflow`. Recovery requires a new subscription and snapshot.
+The limits bound queued wire data. Total process memory also includes buffers,
+decoded objects, and allocation overhead.
 
-When updating fixtures, obtain a fresh offline version/schema pair, record the
-exact stdout hash, review changed selectors and payload shapes, and explicitly
-label synthetic examples versus genuine captures. Do not collect private session
-data to refresh these fixtures.
+## Test coverage
+
+`ProtocolFixtureTests` decodes examples and checks agent identity across moves.
+It compares emitted subscription fields with the fixture, except for the generated
+request ID. It also checks selectors, required fields, and string types against
+the schema excerpt.
+
+The stream test uses an isolated temporary UNIX socket. Separate test mutations
+check future status names and arbitrary layout data. Those mutations test client
+behavior beyond the recorded Herdr 0.9.1 payloads.
+
+`SubscriptionOrderingTests` models one chronological history with independent
+status and layout positions. It controls snapshot reply timing separately.
+The cases include status before layout and a new snapshot before a delayed
+layout event.
+
+These tests cover selected client behavior. They do not validate the complete
+JSON Schema or establish live-server conformance. The
+[build and test guide](development.md#run-the-tests) includes the fixture test
+command.
+
+## Fixture update requirements
+
+A fixture update requires a fresh offline version and schema export, with the
+exact output hash. The review covers changed selectors and payload shapes.
+Examples have explicit labels that distinguish synthetic data from captured
+messages. Fixture updates exclude private session data.

@@ -1,46 +1,56 @@
-# Second review decisions — 2026-09-28
+# Second review decisions
 
-Two fresh agents independently checked all seven sections of the second review.
-Both confirmed the two reported defects. Both also reproduced or identified
-adjacent cases in the same state and protocol contracts. The review examined
-`5c40c78`; later native verification and the owner's release-check exclusions are
-recorded separately in [native verification](native-verification.md).
+On 2026-09-28, two independent agents checked all seven sections of the second
+review against commit `5c40c78`. Both confirmed the two reported defects.
+They also found related state and protocol cases.
+
+The [native verification record](native-verification.md) contains later test
+results and the owner's release-check exclusions.
+
+## Decisions by review item
+
+The review produced these decisions:
 
 | Review item | Decision and change |
 | --- | --- |
-| 1. Earlier fixes | Agree. Keep the buffering, cancellation, task ownership, off-main discovery, and release construction fixes closed. |
-| 2. Status before layout | Agree; fix before release. Separate committed snapshot state from provisional pane-addressed observations. Layout invalidation discards provisional evidence and retains established unread state by identity. A changed mapping in a snapshot has the same protection even if its layout event has not arrived. |
-| 2. Incorrect notification effects | Strengthen the recommendation. A complete provisional work cycle can reach the client before a layout notice. Rollback alone is insufficient. Only committed attention can send a notification. |
-| 3. Success response variants | Agree. Require `ok` for focus and `subscription_started` for subscription acceptance. Also require `session_snapshot` for snapshot replies. Keep additive fields and correct matching-ID/error behavior. Correct permissive mock successes. |
-| 4. Performance | Agree with measurement before caching. Add a repeatable workload matrix and a read-only joint app/server counter tool. Do not claim a speedup, total-memory bound, or completed performance matrix from correctness tests. Keep summary and sorting caches deferred. |
-| 5. Architecture | Agree. Keep the package split, service boundary, and store. Use bounded committed/provisional state in the tracker. Give topology invalidation and transport-history gaps distinct inputs and document their effects. |
-| 6. Timing tests | Agree. Add status-before-layout, complete-cycle-before-layout, unchanged-sequence delayed events, changed-mapping snapshots, and unread-move controls. Add an integration model with independent subscription positions and held snapshot replies. |
-| 6. Optimized tests | Agree. Run `swift test -c release` in CI and the pinned-source release script in addition to debug tests. Test that a failed optimized suite preserves the previous release artifact. |
-| 6. Runtime support | Agree. Compilation and metadata do not establish support on the oldest OS. macOS 14 and real logout/login checks are skipped for 1.0.1 by owner request; they were not performed. Only built and verified architectures may be distributed. |
-| 7. Release process | Agree. Retain the existing fixed-source build, signing, notarization, provenance, and rollback design. Native results are evidence for their recorded candidate, not every later build. |
-| 7. Documentation and UI checks | Agree. Distinguish arrival order from server chronology. Preserve completed native keyboard, notification, terminal, reconnect, contrast, and long-label evidence. VoiceOver, larger-text, and login-startup checks are skipped for 1.0.1 by owner request. No new license grant or broad UI redesign is needed. |
+| 1. Earlier fixes | Retained the buffer limits, cancellation, task ownership, process discovery outside the main actor, and release construction fixes. |
+| 2. Status before layout | Required a fix before release. Snapshot-confirmed state is separate from provisional pane events. A layout change discards provisional events and retains unread state by identity. A changed snapshot mapping has the same effect before a layout event arrives. |
+| 2. Incorrect notifications | Strengthened the recommendation. A full provisional work cycle can arrive before a layout event. Undoing state afterward cannot recall a notification. Only confirmed attention can send notifications. |
+| 3. Success response types | Required `ok` for focus, `subscription_started` for subscriptions, and `session_snapshot` for snapshots. Extra fields remain valid. Request ID and error checks remain. Tests no longer accept unrelated success types. |
+| 4. Performance | Required measurement before caches. Added repeatable workloads and a tool that reads app and server counters. Correctness tests cannot establish speed, total memory limits, or workload measurements. Summary and sorting caches remain deferred. |
+| 5. Architecture | Retained the package split, service interface, and store. The tracker keeps bounded committed and provisional state. Layout invalidation and event history gaps have separate inputs and documented effects. |
+| 6. Timing tests | Added cases for status or a complete cycle before layout, delayed events with unchanged sequences, changed snapshot mappings, and unread state across moves. An integration model controls subscription positions and snapshot replies independently. |
+| 6. Release tests | Added `swift test -c release` to CI and the release script alongside debug tests. Failure of these Swift tests must preserve the previous archive. |
+| 6. Runtime support | Accepted that compilation and metadata do not establish support on the oldest OS. The owner excluded macOS 14 and logout and login checks for 1.0.1. Those checks were not performed. Distribution requires built and verified architectures. |
+| 7. Release process | Retained builds from a fixed source commit, signing, notarization, source records, and restoration after failure. Native results apply to the recorded candidate. |
+| 7. Documentation and UI checks | Distinguished event arrival order from server chronology. Retained keyboard, notification, terminal, recovery, contrast, and long-label results. The owner excluded VoiceOver, larger text, and startup after login for 1.0.1. The review added no license grant or broad UI redesign. |
 
 ## Additional findings
 
-- Old status events can arrive after a newer snapshot. An unchanged authoritative
-  sequence must not validate a second local work cycle. The new tests cover this
-  alongside the reported late-layout case.
-- Snapshot success types were unchecked too. A payload with a snapshot field
-  and an unrelated discriminator must fail rather than being accepted by shape.
-- A newer incompatible snapshot must break a provisional cycle. Keeping its old
-  `working` evidence across a later blocked/unknown state could create another
-  false completion. The reviewers checked this case during implementation.
+Old status events can arrive after a newer snapshot. An unchanged snapshot
+sequence must not validate a second local work cycle. New tests cover this case
+and the reported late layout event.
+
+Snapshot success types were also unchecked. A payload with a snapshot field
+and an unrelated response type now fails.
+
+A newer incompatible snapshot must interrupt a provisional cycle.
+Retaining old `working` evidence across a later blocked or unknown state could
+create another false completion. The reviewers checked that case during
+implementation.
 
 ## Accepted behavior limits
 
-Status events contain an address, not a stable agent identity and shared event
-watermark. Short event-only cycles require unchanged identity/address, a known
-advanced sequence, and a matching snapshot status before attention is committed.
-Missing sequences and uncertain topology can therefore lose a short completion.
-Several cycles before validation produce one latest occurrence. Snapshot-only
-`working` to `idle` still works without sequences.
+Status events contain a pane address. They do not contain a stable agent
+identity or a sequence marker shared with snapshots.
 
-No client-only policy can prove every address relationship if an agent moves
-away and back between snapshots without an identity-bearing event. A stronger
-server contract remains the long-term fix. This change does not claim globally
-ordered delivery or one notification for every raw transition.
+A short event-only cycle requires an unchanged identity and address, an advanced
+known sequence, and a matching snapshot status. Missing sequences or uncertain
+pane mappings can therefore lose a short completion. Several cycles before
+validation produce at most the latest confirmed occurrence. A snapshot
+transition from `working` to `idle` still works without sequences.
+
+The client cannot prove every pane mapping if an agent moves away and back
+between snapshots. Complete recovery would require stronger server guarantees,
+such as events with stable identity. The current protocol does not guarantee
+global event order or a notification for every transition.
