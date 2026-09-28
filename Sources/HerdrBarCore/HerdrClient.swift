@@ -35,6 +35,12 @@ public struct HerdrClient: HerdrService {
     /// The first element is `.subscribed`. Herdr accepts one subscription on each connection,
     /// so a new set of panes needs a new stream.
     public func events(paneIDs: [String]) -> AsyncThrowingStream<HerdrEvent, any Error> {
+        events(paneIDs: paneIDs, maximumBufferedEvents: Self.maximumBufferedEvents)
+    }
+
+    /// Tests can fill the decoded queue without racing the separate wire-line queue.
+    func events(paneIDs: [String], maximumBufferedEvents: Int) -> AsyncThrowingStream<HerdrEvent, any Error> {
+        precondition(maximumBufferedEvents > 0)
         let id = UUID().uuidString
         let subscriptions = paneIDs.map { Subscription(type: "pane.agent_status_changed", paneID: $0) }
             + HerdrEvent.layoutTypes.map { Subscription(type: $0, paneID: nil) }
@@ -47,11 +53,11 @@ public struct HerdrClient: HerdrService {
                                     maximumLine: Self.maximumEventLine,
                                     maximumBufferedLines: Self.maximumBufferedEvents)
         } catch {
-            return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)) {
+            return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedEvents)) {
                 $0.finish(throwing: error)
             }
         }
-        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(Self.maximumBufferedEvents)) { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(maximumBufferedEvents)) { continuation in
             let task = Task {
                 do {
                     var started = false
