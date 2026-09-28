@@ -3,13 +3,19 @@ import Foundation
 import Testing
 @testable import HerdrBarCore
 
+private let invalidSuccessResults = [
+    #"{"type":"pong"}"#, #"{}"#, #"{"accepted":true}"#,
+    #"{"type":17}"#, #"{"type":null}"#, #"[]"#, #"null"#,
+]
+
 @Test func readsFragmentedSocketResponses() async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
         #expect(object["method"] as? String == "session.snapshot")
         let data = try JSONSerialization.data(withJSONObject: [
             "id": object["id"]!,
-            "result": ["snapshot": ["version": "test", "agents": [], "workspaces": [], "tabs": []]],
+            "result": ["type": "session_snapshot", "future_metadata": ["revision": 2],
+                       "snapshot": ["version": "test", "agents": [], "workspaces": [], "tabs": []]],
         ]) + Data([10])
         return [Data(data.prefix(7)), Data(data.dropFirst(7))]
     }
@@ -44,10 +50,45 @@ import Testing
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
         #expect(object["method"] as? String == "agent.focus")
         #expect(object["params"] as? [String: String] == ["target": "w12:p3"])
-        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "ok"]]) + Data([10])]
+        return [try JSONSerialization.data(withJSONObject: [
+            "id": object["id"]!, "future_envelope": true,
+            "result": ["type": "ok", "future_metadata": ["revision": 2]],
+        ]) + Data([10])]
     }
     defer { server.stop() }
     try await HerdrClient(socketPath: server.path).focus(paneID: "w12:p3")
+}
+
+@Test(arguments: invalidSuccessResults)
+func focusRejectsInvalidSuccessVariants(result: String) async throws {
+    let server = try TestSocketServer { request in
+        let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
+        return [Data(#"{"id":"\#(object["id"]!)","result":\#(result)}"#.utf8) + Data([10])]
+    }
+    defer { server.stop() }
+    do {
+        try await HerdrClient(socketPath: server.path).focus(paneID: "w1:p1")
+        Issue.record("An invalid success variant must not complete the focus action")
+    } catch HerdrError.invalidResponse {}
+}
+
+@Test(arguments: invalidSuccessResults)
+func snapshotsRejectInvalidSuccessVariants(result: String) async throws {
+    let server = try TestSocketServer { request in
+        let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
+        var payload = try JSONSerialization.jsonObject(with: Data(result.utf8), options: [.fragmentsAllowed])
+        if var fields = payload as? [String: Any] {
+            // A valid snapshot body must not make the wrong result variant valid.
+            fields["snapshot"] = ["version": "test", "agents": [], "workspaces": [], "tabs": []]
+            payload = fields
+        }
+        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": payload]) + Data([10])]
+    }
+    defer { server.stop() }
+    do {
+        _ = try await HerdrClient(socketPath: server.path).snapshot()
+        Issue.record("An invalid success variant must not supply a snapshot")
+    } catch HerdrError.invalidResponse {}
 }
 
 @Test func serverErrorsAreReported() async throws {
@@ -126,7 +167,7 @@ import Testing
         #expect(subscriptions.contains(["type": "pane.agent_status_changed", "pane_id": "w1:p1"]))
         #expect(subscriptions.contains(["type": "pane.created"]))
         let lines = [
-            #"{"id":"\#(object["id"]!)","result":{"type":"subscription_started"}}"#,
+            #"{"id":"\#(object["id"]!)","future_envelope":true,"result":{"type":"subscription_started","future_metadata":{"revision":2}}}"#,
             #"{"data":{"agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"event":"pane.agent_status_changed"}"#,
             #"{"data":{"agent_status":"idle","pane_id":"w1:p1","workspace_id":"w1"},"event":"pane.agent_status_changed"}"#,
             #"{"data":{"pane_id":"w1:p2","type":"pane_closed","workspace_id":"w1"},"event":"pane_closed"}"#,
@@ -142,6 +183,25 @@ import Testing
     }
     #expect(events == [.subscribed, .agentStatus(paneID: "w1:p1", status: .working),
                        .agentStatus(paneID: "w1:p1", status: .idle), .layoutChanged])
+}
+
+@Test(arguments: invalidSuccessResults)
+func subscriptionsRejectInvalidSuccessVariantsBeforeBecomingLive(result: String) async throws {
+    let server = try TestSocketServer(linger: 3_000_000) { request in
+        let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
+        return [Data(#"{"id":"\#(object["id"]!)","result":\#(result)}"#.utf8) + Data([10]),
+                Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","agent_status":"done"}}"#.utf8) + Data([10])]
+    }
+    defer { server.stop() }
+    var events: [HerdrEvent] = []
+    do {
+        for try await event in HerdrClient(socketPath: server.path).events(paneIDs: ["w1:p1"]) {
+            events.append(event)
+        }
+        Issue.record("An invalid success variant must fail the subscription")
+    } catch HerdrError.invalidResponse {}
+    #expect(events.isEmpty)
+    #expect(await signalled(server.clientClosed))
 }
 
 @Test func failedSubscriptionsReportTheServerError() async throws {
@@ -167,7 +227,7 @@ import Testing
 func malformedEventEndsTheStreamInsteadOfSkippingATransition(line: String) async throws {
     let server = try TestSocketServer(linger: 3_000_000) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]])
+        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]])
         return [acknowledgement + Data([10]),
                 Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"working\"}}\n".utf8),
                 Data((line + "\n").utf8),
@@ -188,7 +248,7 @@ func malformedEventEndsTheStreamInsteadOfSkippingATransition(line: String) async
 @Test func futureEventsAndStatusesDoNotBreakForwardCompatibility() async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]]) + Data([10]),
+        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]]) + Data([10]),
                 Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"future_state\"}}\n".utf8),
                 Data("{\"event\":\"workspace.future_event\",\"data\":[1,2,3]}\n".utf8),
                 Data("{\"event\":\"pane.moved\",\"data\":{\"agent_status\":17}}\n".utf8)]
@@ -204,7 +264,7 @@ func malformedEventEndsTheStreamInsteadOfSkippingATransition(line: String) async
 @Test func unknownEventsDoNotInterruptAWorkTransition() async throws {
     let server = try TestSocketServer(chunkDelay: 0) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        var data = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]]) + Data([10])
+        var data = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]]) + Data([10])
         data.append(Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"working\"}}\n".utf8))
         for _ in 0..<64 { data.append(Data("{\"event\":\"workspace.future_event\"}\n".utf8)) }
         data.append(Data("{\"event\":\"pane.agent_status_changed\",\"data\":{\"pane_id\":\"w1:p1\",\"agent_status\":\"idle\"}}\n".utf8))
@@ -294,7 +354,7 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
 @Test func establishedSubscriptionCanRemainQuietPastTheHandshakeTimeout() async throws {
     let server = try TestSocketServer(chunkDelay: 300_000) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]]) + Data([10]),
+        return [try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]]) + Data([10]),
                 Data("{\"event\":\"pane.created\"}\n".utf8)]
     }
     defer { server.stop() }
@@ -336,7 +396,7 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
     let decodedLimit = 4
     let server = try TestSocketServer(linger: 3_000_000, chunkDelay: 0) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]])
+        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]])
         // Five frames fit the wire queue, but overflow the four-element decoded queue.
         let events = String(repeating: "{\"event\":\"pane.created\"}\n", count: decodedLimit)
         return [acknowledgement + Data([10]) + Data(events.utf8)]
@@ -399,7 +459,7 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
 @Test func aSingleWriteBurstOf64EventsPreservesEveryEventInOrder() async throws {
     let server = try TestSocketServer(chunkDelay: 0) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        var burst = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]]) + Data([10])
+        var burst = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]]) + Data([10])
         for index in 0..<64 {
             burst.append(Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p\#(index)","agent_status":"working"}}"#.utf8))
             burst.append(10)
@@ -422,7 +482,7 @@ func subscriptionWithoutAcknowledgementTimesOutAndCloses(partialReply: Bool) asy
 func subscriptionLinesHaveASmallerExactSizeLimit(extraBytes: Int) async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]])
+        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]])
         var event = Data("{\"event\":\"pane.created\"}".utf8)
         event.append(Data(repeating: 32, count: HerdrClient.maximumEventLine + extraBytes - event.count))
         event.append(10)
@@ -445,7 +505,7 @@ func subscriptionLinesHaveASmallerExactSizeLimit(extraBytes: Int) async throws {
 @Test func cancellingDuringSustainedEventTrafficClosesTheSocketPromptly() async throws {
     let server = try TestSocketServer(chunkDelay: 1_000, repeatLastChunkFor: 3) { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": [:]])
+        let acknowledgement = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "subscription_started"]])
         return [acknowledgement + Data([10]), Data("{\"event\":\"pane.created\"}\n".utf8)]
     }
     defer { server.stop() }

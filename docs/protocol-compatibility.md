@@ -39,6 +39,9 @@ already-running server; this fixture pin is not a universal compatibility promis
 - `session.snapshot` returns `result.type = "session_snapshot"` and
   `result.snapshot`. Real snapshots include `protocol`, panes and layouts in
   addition to the fields Herdr Bar consumes. Extra fields are ignored by decoding.
+- `agent.focus` succeeds only with `result.type = "ok"`. Each of the three client
+  methods requires its expected result type; a matching request ID alone does
+  not establish success.
 - `terminal_id` and `agent_session` identify the same agent across a move, while
   `pane_id`, `workspace_id` and `tab_id` change. The move event exposes
   `previous_pane_id` and the new `pane.pane_id`; use the new routing address.
@@ -65,6 +68,28 @@ never the installed Herdr session. Separate in-test mutations exercise future
 status names and arbitrary layout data; these are compatibility probes, **not**
 claims about payloads emitted by 0.9.1. These focused tests are not a general
 JSON Schema validator or live-server conformance suite.
+
+## Event order is local to each subscription
+
+Herdr 0.9.1 [polls selectors in request order](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/server.rs#L752).
+Its status and layout selectors have
+[independent history positions](https://github.com/herdrdev/herdr/blob/v0.9.1/src/api/subscriptions.rs#L283).
+A status selector can skip a move and emit a later status before the layout
+selector reports the move. A separate snapshot response has no shared stream
+watermark. Changing selector order does not establish a global ordering contract.
+
+Status events supply an address and status, without a stable terminal/session
+identity or sequence watermark. The reducer therefore separates provisional
+observations from snapshot-confirmed attention effects. An unchanged sequence
+cannot validate a delayed cycle. Changed mappings discard provisional evidence
+while retaining established unread state by identity. With no sequence, an
+event-only completion is not committed. A move away and back between snapshots
+can remain ambiguous; exact recovery of every short cycle is not guaranteed.
+
+`SubscriptionOrderingTests` models one chronological history with separate
+status/layout cursors and independently held snapshot replies. It covers status
+before layout and a new snapshot before the delayed layout event. This is a
+controlled store/reducer integration model, not a live-server conformance test.
 
 ## Event size is a client policy
 

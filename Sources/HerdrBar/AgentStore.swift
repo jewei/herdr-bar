@@ -178,8 +178,8 @@ final class AgentStore: ObservableObject {
                     scheduleRefresh()
                     return
                 }
-                // Events have already updated the tracker in order. Install snapshot
-                // metadata without replaying its older statuses over those observations.
+                // A reply and an event stream have no shared watermark. The tracker
+                // validates attention and retains provisional activity across an overlap.
                 apply(snapshot, preservingObservedStateFor: pendingEventPanes)
                 lastSuccessfulRefresh = .now
                 if pollTask != nil { syncEvents() }
@@ -205,7 +205,7 @@ final class AgentStore: ObservableObject {
         topologyUncertain = false
         let live = Set(updated.map(\.identity))
         lastNotified = lastNotified.filter { live.contains($0.key) }
-        emitNotifications(for: updated)
+        emitNotifications(for: tracker.committedRows(updated))
         hasSnapshot = true
         // Each assignment to a published property updates SwiftUI, so assign only changed values.
         let rowsChanged = rows != updated
@@ -402,20 +402,23 @@ final class AgentStore: ObservableObject {
                 pendingEventPanes.insert(paneID)
                 tracker.observe(paneID: paneID, status: status)
                 let updated = tracker.project(rows)
-                emitNotifications(for: updated)
                 if rows != updated { rows = updated; onChange?() }
             } else if !topologyUncertain {
                 // A public address may now belong to another terminal. Do not
                 // attribute unversioned events until a fresh topology is installed.
                 topologyUncertain = true
-                tracker.markEventGap()
+                tracker.invalidateTopology()
+                rows = tracker.project(rows)
+                onChange?()
                 layoutSerial += 1
             }
             // Once quarantined, status traffic is not further evidence of a
             // topology change: let the recovery snapshot finish, even under load.
         case .layoutChanged:
             topologyUncertain = true
-            tracker.markEventGap()
+            tracker.invalidateTopology()
+            rows = tracker.project(rows)
+            onChange?()
             layoutSerial += 1
         case .ignored:
             return

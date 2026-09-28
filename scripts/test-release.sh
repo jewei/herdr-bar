@@ -26,6 +26,7 @@ case "$*" in
             printf 'changed during release\n' >> "$TEST_PROJECT/README.md"
         fi
         ;;
+    'test -c release') [[ "${MOCK_FAILURE:-}" != optimized-tests ]] || exit 1 ;;
     'build -c release') mkdir -p .build/release; printf 'mock executable\n' > .build/release/HerdrBar ;;
     'build -c release --show-bin-path') printf '%s/.build/release\n' "$PWD" ;;
     --version) printf 'Swift test toolchain\n' ;;
@@ -101,6 +102,7 @@ assert manifest['swift'] == 'Swift test toolchain'
 assert manifest['tag'] == 'v1.0.1'
 PY
 [[ "$(< README.md)" == *'changed during release'* ]] || fail 'mutation did not run'
+grep -Fxq 'swift test -c release' "$RELEASE_TEST_LOG" || fail 'optimized tests did not run'
 git checkout -- README.md
 (cd dist && shasum -a 256 -c HerdrBar-1.0.1-arm64.sha256)
 printf 'PASS: fixed source, architecture, manifest, and archive checksum\n'
@@ -108,7 +110,7 @@ printf 'PASS: fixed source, architecture, manifest, and archive checksum\n'
 for suffix in zip json sha256; do
     cp "dist/HerdrBar-1.0.1-arm64.$suffix" "$test_dir/accepted.$suffix"
 done
-for failure in tests sign notary assess promote; do
+for failure in tests optimized-tests sign notary assess promote; do
     if MOCK_FAILURE="$failure" bash scripts/release.sh > "$test_dir/output" 2>&1; then
         fail "$failure unexpectedly succeeded"
     fi
