@@ -1,5 +1,26 @@
 # Native verification
 
+## Independent review follow-up — 2026-09-28
+
+Checked on macOS 27.0 (26A428), Apple Silicon, with Xcode 27.0 and Swift 6.4:
+
+- All 100 native Swift tests passed: 32 store tests and 68 core tests.
+- The release build passed. Bundle metadata, the `arm64` executable, and its
+  ad hoc code signature passed validation.
+- Packaging and full release tests passed with mock Apple services. They cover
+  source export, source changes during a build, tag/build rules, provenance,
+  checksums, and rollback after artifact promotion failure.
+- All five release-build previews rendered and were inspected: agents,
+  attention, empty, offline, and loading. The attention summary uses an ellipsis
+  when its text exceeds the available footer width.
+- Two independent agents checked every supplied review item and checked the
+  follow-up fixes. See [decisions and limits](review-decisions.md).
+
+CI selects Xcode 16.4 on macOS 15 and repeats tests and bundle validation.
+See the pull request and main-branch CI results for the tested commit. Release
+manifests record the source commit and actual signing build toolchain. Mock
+release tests do not establish Apple notarization of a distribution artifact.
+
 ## Reliability follow-up
 
 Checked locally on macOS 27.0 (26A428), Apple Silicon, with Swift 6.4:

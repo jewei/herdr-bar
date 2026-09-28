@@ -10,16 +10,29 @@ permissions:
 jobs:
   test:
     runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - name: Show selected toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Check text format
+        run: python3 scripts/check-format.py
       - name: Check shell syntax
         run: |
           for script in scripts/*.sh; do
             bash -n "$script"
           done
       - name: Test packaging with mocked tools
-        run: bash scripts/test-packaging.sh
+        run: |
+          bash scripts/test-packaging.sh
+          bash scripts/test-release.sh
       - name: Run Swift tests
         run: swift test
-      - name: Build release configuration
-        run: swift build -c release
+      - name: Build and validate the app bundle
+        run: |
+          bash scripts/build.sh
+          python3 scripts/verify-bundle.py 'dist/Herdr Bar.app' Resources/Info.plist
