@@ -5,6 +5,24 @@ Each result applies to the recorded run or candidate. The
 [native release checklist](native-checklist.md) contains the procedure for future
 checks.
 
+## Release 1.0.3 preparation
+
+On 2026-09-29, source commit `24c130abce100ff5f65846224c731ee127534c86`
+passed 118 debug tests and 118 release tests on macOS 27.0, build 26A428,
+on Apple Silicon with Swift 6.4. These included 38 store tests and 80 core tests.
+This release adds an app icon and does not change Swift source.
+
+The icon was compiled from `design/AppIcon.icon` with `actool` from Xcode 27.0.
+A fresh bundle passed bundle validation with `Assets.car` and `AppIcon.icns`.
+On macOS 27.0, the Finder icon showed the system mask without a gray frame.
+Packaging and release-script tests passed with mock Apple services.
+
+The icon was not checked on macOS 14 or 15. The full interactive checklist,
+VoiceOver, larger text, and startup after logout and login were not repeated
+for this patch. These unperformed checks are not recorded as passed. The 1.0.3
+release notes record the final source commit, CI run, archive checks, and
+distribution architecture.
+
 ## Release 1.0.2 preparation
 
 On 2026-09-29, source commit `a2ca44bf4546eb17b154a54fbb54e3daee3d8851`
