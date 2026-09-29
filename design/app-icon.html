@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Herdr Bar app icon</title>
+<style>
+  html, body { margin: 0; background: transparent; }
+  canvas { display: block; width: 1024px; height: 1024px; }
+</style>
+</head>
+<body>
+<canvas id="icon" width="1024" height="1024"></canvas>
+<script>
+// Source for Resources/AppIcon.icon. Run scripts/make-icon.sh after edits.
+// Colors from Sources/HerdrBar/Theme.swift.
+const C = { navy: '#131f2b', idle: '#66d994', done: '#87c7ff' };
+
+// macOS icon grid: 1024 canvas, 824 body, superellipse corners.
+function squircle(ctx, x = 100, y = 100, s = 824, n = 5) {
+  const cx = x + s / 2, cy = y + s / 2, r = s / 2;
+  ctx.beginPath();
+  for (let i = 0; i <= 720; i++) {
+    const t = (i / 720) * Math.PI * 2, c = Math.cos(t), sn = Math.sin(t);
+    const px = cx + r * Math.sign(c) * Math.abs(c) ** (2 / n);
+    const py = cy + r * Math.sign(sn) * Math.abs(sn) ** (2 / n);
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function linear(ctx, x0, y0, x1, y1, stops) {
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  stops.forEach((c, i) => g.addColorStop(i / (stops.length - 1), c));
+  return g;
+}
+
+function dot(ctx, x, y, r, color) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+}
+
+function pill(ctx, x, y, w, h, color) {
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, h / 2); ctx.fillStyle = color; ctx.fill();
+}
+
+// Full-bleed art on a 1024 canvas. macOS applies the icon mask and shadow.
+function background(ctx) {
+  ctx.fillStyle = linear(ctx, 0, 0, 0, 1024, ['#9fd3ff', C.done, '#b7e3a8']);
+  ctx.fillRect(0, 0, 1024, 1024);
+  // Grass hill.
+  ctx.beginPath(); ctx.ellipse(512, 1131, 770, 348, 0, 0, Math.PI * 2);
+  ctx.fillStyle = C.idle; ctx.fill();
+}
+
+function sheep(ctx) {
+  // Drawn on the 824-point body grid of the legacy tile, then enlarged.
+  ctx.translate(512, 512); ctx.scale(1024 / 824, 1024 / 824); ctx.translate(-512, -512);
+  // Legs.
+  for (const x of [440, 500, 620, 680]) pill(ctx, x - 22, 600, 44, 150, C.navy);
+  // Wool.
+  const puffs = [[420, 470], [500, 400], [600, 400], [680, 470], [650, 560], [560, 600], [460, 580], [555, 490]];
+  for (const [x, y] of puffs) dot(ctx, x, y + 12, 104, 'rgba(19,31,43,0.10)');
+  for (const [x, y] of puffs) dot(ctx, x, y, 104, '#ffffff');
+  // Head.
+  ctx.save(); ctx.translate(330, 470); ctx.rotate(-0.2);
+  ctx.beginPath(); ctx.ellipse(-70, -40, 50, 26, -0.5, 0, Math.PI * 2); ctx.fillStyle = C.navy; ctx.fill();
+  ctx.beginPath(); ctx.ellipse(0, 0, 92, 116, 0, 0, Math.PI * 2); ctx.fill();
+  dot(ctx, -26, -18, 16, '#fff'); dot(ctx, -22, -16, 8, C.navy);
+  ctx.restore();
+  dot(ctx, 350, 382, 58, '#ffffff'); // tuft
+}
+
+// Preview of the complete icon inside a squircle, similar to the macOS mask.
+function preview(ctx) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.28)';
+  ctx.shadowBlur = 30; ctx.shadowOffsetY = 12;
+  squircle(ctx); ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.restore();
+  squircle(ctx); ctx.clip();
+  ctx.translate(100, 100); ctx.scale(824 / 1024, 824 / 1024);
+  ctx.save(); background(ctx); ctx.restore();
+  ctx.save(); sheep(ctx); ctx.restore();
+}
+
+// scripts/make-icon.sh renders each layer with #background and #sheep.
+const layers = { background, sheep };
+(layers[location.hash.slice(1)] || preview)(document.getElementById('icon').getContext('2d'));
+</script>
+</body>
+</html>

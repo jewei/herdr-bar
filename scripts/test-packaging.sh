@@ -15,6 +15,8 @@ mkdir -p "$TEST_PROJECT/scripts" "$TEST_PROJECT/Resources" "$TEST_PROJECT/bin" "
 cp "$scripts_dir/build.sh" "$scripts_dir/release.sh" "$TEST_PROJECT/scripts/"
 printf 'fresh executable\n' > "$TEST_PROJECT/bin/HerdrBar"
 printf 'fresh plist\n' > "$TEST_PROJECT/Resources/Info.plist"
+printf 'fresh icon\n' > "$TEST_PROJECT/Resources/AppIcon.icns"
+printf 'fresh assets\n' > "$TEST_PROJECT/Resources/Assets.car"
 
 # Mock executables are confined to this temporary fixture and subprocess PATH.
 printf '%s\n' '#!/bin/bash
@@ -82,18 +84,22 @@ app="$TEST_PROJECT/dist/Herdr Bar.app"
 [[ ! -e "$app/Contents/_CodeSignature/stale" ]] || fail 'stale signature survived'
 cmp "$TEST_PROJECT/bin/HerdrBar" "$app/Contents/MacOS/HerdrBar"
 cmp "$TEST_PROJECT/Resources/Info.plist" "$app/Contents/Info.plist"
+cmp "$TEST_PROJECT/Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+cmp "$TEST_PROJECT/Resources/Assets.car" "$app/Contents/Resources/Assets.car"
 [[ -x "$app/Contents/MacOS/HerdrBar" ]] || fail 'executable bit missing'
 [[ -f "$app/Contents/_CodeSignature/CodeResources" ]] || fail 'bundle was not signed'
 assert_no_staging
 printf 'PASS: fresh bundle excludes stale resources and signatures\n'
 
-for failure in build bin-path sign verify promote missing-binary missing-plist; do
+for failure in build bin-path sign verify promote missing-binary missing-plist missing-icon missing-assets; do
     seed_old_bundle
     rm -rf "$test_dir/expected.app"
     cp -R "$app" "$test_dir/expected.app"
     case "$failure" in
         missing-binary) "$REAL_MV" "$TEST_PROJECT/bin/HerdrBar" "$test_dir/saved" ;;
         missing-plist) "$REAL_MV" "$TEST_PROJECT/Resources/Info.plist" "$test_dir/saved" ;;
+        missing-icon) "$REAL_MV" "$TEST_PROJECT/Resources/AppIcon.icns" "$test_dir/saved" ;;
+        missing-assets) "$REAL_MV" "$TEST_PROJECT/Resources/Assets.car" "$test_dir/saved" ;;
     esac
     if MOCK_FAIL="$failure" bash "$TEST_PROJECT/scripts/build.sh" > "$test_dir/output" 2>&1; then
         fail "$failure unexpectedly succeeded"
@@ -103,6 +109,8 @@ for failure in build bin-path sign verify promote missing-binary missing-plist; 
     case "$failure" in
         missing-binary) "$REAL_MV" "$test_dir/saved" "$TEST_PROJECT/bin/HerdrBar" ;;
         missing-plist) "$REAL_MV" "$test_dir/saved" "$TEST_PROJECT/Resources/Info.plist" ;;
+        missing-icon) "$REAL_MV" "$test_dir/saved" "$TEST_PROJECT/Resources/AppIcon.icns" ;;
+        missing-assets) "$REAL_MV" "$test_dir/saved" "$TEST_PROJECT/Resources/Assets.car" ;;
     esac
     printf 'PASS: %s failure preserves existing bundle\n' "$failure"
 done

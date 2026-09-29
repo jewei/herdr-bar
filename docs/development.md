@@ -85,5 +85,32 @@ permissions, login registration, and the normal app instance unchanged.
 
 3. Inspect each PNG in the printed directory.
 
+## Update the app icon
+
+The source of the app icon is a canvas drawing in `design/app-icon.html`.
+The drawing has two full-size layers: the background and the sheep. macOS
+applies the icon shape, shadow, and glass effect.
+
+`design/AppIcon.icon` is an Icon Composer icon that contains the rendered layers.
+`Resources/Assets.car` and `Resources/AppIcon.icns` are compiled from it.
+The build copies the compiled files into the app. The build does not render or
+compile the icon, so CI does not need Chrome or Xcode 26.
+
+1. Edit the drawing in `design/app-icon.html`. To see the result, open the file
+   in a browser.
+2. Render the layers and compile the icon. This step requires Google Chrome and
+   Xcode 26 or later:
+
+   ```sh
+   ./scripts/make-icon.sh
+   ```
+
+   To use a different Chrome executable, set `CHROME` to its path.
+
+3. Commit `design` and the two compiled files in `Resources` together.
+
+To change the glass, shadow, or translucency settings, open
+`design/AppIcon.icon` in Icon Composer. Then run `./scripts/make-icon.sh` again.
+
 For checks that require interaction with macOS, use the
 [native release checklist](native-checklist.md).

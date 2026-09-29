@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleExecutable</key><string>HerdrBar</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundleIdentifier</key><string>dev.jewei.herdr-bar</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Herdr Bar</string>

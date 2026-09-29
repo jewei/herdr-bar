@@ -11,7 +11,7 @@ export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_GLOBAL=/dev/null
 mkdir -p "$TEST_PROJECT/scripts" "$TEST_PROJECT/Resources" "$test_dir/mocks"
 cp "$scripts_dir/build.sh" "$scripts_dir/release.sh" "$scripts_dir/verify-bundle.py" "$TEST_PROJECT/scripts/"
-cp "$scripts_dir/../Resources/Info.plist" "$TEST_PROJECT/Resources/Info.plist"
+cp "$scripts_dir/../Resources/"{Info.plist,AppIcon.icns,Assets.car} "$TEST_PROJECT/Resources/"
 printf '.build/\ndist/\n' > "$TEST_PROJECT/.gitignore"
 printf 'fixed source\n' > "$TEST_PROJECT/README.md"
 cat > "$test_dir/mocks/swift" <<'MOCK'

@@ -32,6 +32,7 @@ mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 cp "$binary_dir/HerdrBar" "$staged_app/Contents/MacOS/HerdrBar"
 chmod +x "$staged_app/Contents/MacOS/HerdrBar"
 cp Resources/Info.plist "$staged_app/Contents/Info.plist"
+cp Resources/AppIcon.icns Resources/Assets.car "$staged_app/Contents/Resources/"
 codesign --force --sign - --identifier dev.jewei.herdr-bar "$staged_app"
 codesign --verify --deep --strict "$staged_app"
 

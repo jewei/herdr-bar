@@ -18,6 +18,8 @@ def verify(app, source):
     required = {
         "CFBundleIdentifier": "dev.jewei.herdr-bar",
         "CFBundleExecutable": "HerdrBar",
+        "CFBundleIconFile": "AppIcon",
+        "CFBundleIconName": "AppIcon",
         "CFBundlePackageType": "APPL",
         "LSMinimumSystemVersion": "14.0",
         "LSUIElement": True,
@@ -29,6 +31,12 @@ def verify(app, source):
         raise ValueError("Use a three-part marketing version.")
     if not re.fullmatch(r"[1-9][0-9]*", actual.get("CFBundleVersion", "")):
         raise ValueError("Use a positive integer build number.")
+    resources = app / "Contents/Resources"
+    icon = resources / "AppIcon.icns"
+    if not icon.is_file() or icon.read_bytes()[:4] != b"icns":
+        raise ValueError("The app icon is missing or is not an icns file.")
+    if not (resources / "Assets.car").is_file():
+        raise ValueError("The asset catalog with the app icon is missing.")
     binary = app / "Contents/MacOS/HerdrBar"
     if not binary.is_file() or not binary.stat().st_mode & 0o111:
         raise ValueError("The app executable is missing or is not executable.")

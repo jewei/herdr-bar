@@ -1,0 +1,30 @@
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "sheep.png",
+          "name" : "sheep"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "background.png",
+          "name" : "background"
+        }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
