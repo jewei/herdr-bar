@@ -90,6 +90,21 @@ import Testing
         #expect(snapshot.agents.first?.agentStatus == .blocked)
     }
 
+    @Test func clientConsumesPinnedFocusSuccessVariant() async throws {
+        // Herdr 0.9.1 handle_agent_focus returns AgentInfo, not Ok.
+        let acknowledgement = try encode(try #require(examples()["focus_response"]))
+        let server = try ProtocolFixtureSocket { requestData in
+            let request = try #require(JSONSerialization.jsonObject(with: requestData) as? [String: Any])
+            #expect(request["method"] as? String == "agent.focus")
+            #expect(request["params"] as? [String: String] == ["target": "w1:p1"])
+            var reply = try #require(JSONSerialization.jsonObject(with: acknowledgement) as? [String: Any])
+            reply["id"] = request["id"]
+            return try JSONSerialization.data(withJSONObject: reply) + Data([10])
+        }
+        defer { server.stop() }
+        try await HerdrClient(socketPath: server.path).focus(paneID: "w1:p1")
+    }
+
     @Test func additivePayloadChangesRemainCompatible() throws {
         // These mutations are forward-compatibility probes, not 0.9.1 schema examples.
         let bodies: [Any] = [NSNull(), 17, ["pane_id": 42, "agent_status": ["new": true]]]

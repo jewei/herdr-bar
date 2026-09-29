@@ -270,9 +270,19 @@ final class AgentStore: ObservableObject {
                 await refresh()
             } catch {
                 guard generation == connectionGeneration, !Task.isCancelled else { return }
-                actionError = error.localizedDescription
+                if case HerdrError.invalidResponse = error {
+                    actionError = "Cannot confirm the agent opened. Unexpected Herdr reply. Open it in your terminal."
+                } else {
+                    actionError = error.localizedDescription
+                }
             }
         }
+    }
+
+    func dismissActionError() {
+        guard actionError != nil else { return }
+        actionError = nil
+        onChange?()
     }
 
     func markDoneAsRead() {

@@ -8,6 +8,13 @@ private let invalidSuccessResults = [
     #"{"type":17}"#, #"{"type":null}"#, #"[]"#, #"null"#,
 ]
 
+private func focusResult(paneID: String = "w1:p1") -> [String: Any] {
+    ["type": "agent_info", "agent": [
+        "pane_id": paneID, "terminal_id": "fixture-terminal", "workspace_id": "w1", "tab_id": "w1:t1",
+        "agent_status": "idle", "focused": true, "revision": 1,
+    ]]
+}
+
 @Test func readsFragmentedSocketResponses() async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
@@ -38,7 +45,7 @@ private let invalidSuccessResults = [
 @Test func bytesAfterTheFirstNewlineAreIgnored() async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
-        let data = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": ["type": "ok"]])
+        let data = try JSONSerialization.data(withJSONObject: ["id": object["id"]!, "result": focusResult()])
         return [data + Data("\nnot json\n".utf8)]
     }
     defer { server.stop() }
@@ -50,16 +57,22 @@ private let invalidSuccessResults = [
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
         #expect(object["method"] as? String == "agent.focus")
         #expect(object["params"] as? [String: String] == ["target": "w12:p3"])
+        var result = focusResult(paneID: "w12:p3")
+        result["future_metadata"] = ["revision": 2]
         return [try JSONSerialization.data(withJSONObject: [
             "id": object["id"]!, "future_envelope": true,
-            "result": ["type": "ok", "future_metadata": ["revision": 2]],
+            "result": result,
         ]) + Data([10])]
     }
     defer { server.stop() }
     try await HerdrClient(socketPath: server.path).focus(paneID: "w12:p3")
 }
 
-@Test(arguments: invalidSuccessResults)
+@Test(arguments: invalidSuccessResults + [
+    #"{"type":"ok"}"#, #"{"type":"agent_info"}"#,
+    #"{"type":"agent_info","agent":null}"#, #"{"type":"agent_info","agent":{}}"#,
+    #"{"type":"agent_info","agent":{"pane_id":"w1:p1"}}"#,
+])
 func focusRejectsInvalidSuccessVariants(result: String) async throws {
     let server = try TestSocketServer { request in
         let object = try JSONSerialization.jsonObject(with: request) as! [String: Any]
@@ -108,7 +121,9 @@ func snapshotsRejectInvalidSuccessVariants(result: String) async throws {
 }
 
 @Test func mismatchedResponseIDsAreRejected() async throws {
-    let server = try TestSocketServer { _ in [Data(#"{"id":"wrong","result":{"type":"ok"}}"#.utf8) + Data([10])] }
+    let server = try TestSocketServer { _ in
+        [try JSONSerialization.data(withJSONObject: ["id": "wrong", "result": focusResult()]) + Data([10])]
+    }
     defer { server.stop() }
     do {
         try await HerdrClient(socketPath: server.path).focus(paneID: "w1:p1")

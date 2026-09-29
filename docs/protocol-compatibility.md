@@ -36,6 +36,7 @@ The IDs, titles, paths, state sequences, and session values are invented.
 The examples include these messages:
 
 - Snapshots before and after a move between workspaces
+- An agent focus reply with agent details
 - The move event and other layout events
 - Each agent status value
 - A subscription request and its acknowledgement
@@ -51,12 +52,21 @@ The client requires these response types:
 | Method | Required `result.type` | Response data |
 | --- | --- | --- |
 | `session.snapshot` | `session_snapshot` | `result.snapshot` |
-| `agent.focus` | `ok` | Focus acknowledgement |
+| `agent.focus` | `agent_info` | `result.agent` |
 | `events.subscribe` | `subscription_started` | Subscription acknowledgement |
 
 A matching request ID alone does not establish success. The client also checks
 errors and the response type. Decoding accepts extra fields. Real snapshots
 include `protocol`, panes, and layouts beyond the fields Herdr Bar uses.
+
+On 2026-09-29, a fresh offline schema export had the same byte count and SHA-256
+as the original export. The focus fixture adds the `agent_info` variant from
+`ResponseResult/oneOf/12`. Herdr 0.9.1's
+[focus handler](https://github.com/herdrdev/herdr/blob/v0.9.1/src/app/api/agents.rs#L55-L62)
+returns this variant. The schema lists response variants but does not map each
+method to its reply. The earlier requirement for `ok` was incorrect and caused
+valid focus replies to fail. The focus regression test checks the synthetic
+reply through a temporary socket.
 
 Across a move, `terminal_id` and `agent_session` identify the same agent.
 The `pane_id`, `workspace_id`, and `tab_id` change. A move event contains

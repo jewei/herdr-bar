@@ -23,6 +23,21 @@ If the palette shows **Polling**, hover over the label to read the event stream
 error. Snapshots still work in this mode. The app retries the event subscription.
 An established stream can remain connected without events.
 
+## Handle an unexpected reply when opening an agent
+
+This message means that Herdr Bar could not validate the reply to an open
+request. The agent pane can have changed even if the reply failed validation.
+The message does not mean that the agent's task failed. **Live** refers to the
+status event connection, which can still work.
+
+Open the agent directly in your terminal. To try again from Herdr Bar, select
+**Settings** > **Refresh now**, then select the agent. If the error repeats,
+report it with the Herdr and Herdr Bar versions.
+
+Click **Dismiss message** (the × button), or press **Escape**, to clear the
+message. Dismissal does not mark an agent as read. Press **Escape** again to
+close the palette.
+
 ## Select the correct terminal
 
 If the app activates the wrong terminal, select your terminal in **Settings**.

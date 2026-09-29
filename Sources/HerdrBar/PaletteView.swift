@@ -19,11 +19,14 @@ struct PaletteView: View {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                     Text(error).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
-                    Button { store.actionError = nil; store.onChange?() } label: {
+                    Button(action: store.dismissActionError) {
                         Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("Dismiss message")
+                    .accessibilityLabel("Dismiss message")
                 }
                 .font(Theme.caption)
                 .foregroundStyle(Theme.blocked)
@@ -43,7 +46,11 @@ struct PaletteView: View {
         .onKeyPress(.upArrow) { store.moveSelection(by: -1); return .handled }
         .onKeyPress(.downArrow) { store.moveSelection(by: 1); return .handled }
         .onKeyPress(.return) { store.openSelected(); return .handled }
-        .onKeyPress(.escape) { close(); return .handled }
+        .onKeyPress(.escape) {
+            if store.actionError != nil { store.dismissActionError() }
+            else { close() }
+            return .handled
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Herdr agents")
     }

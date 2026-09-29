@@ -229,8 +229,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
             do {
                 if live {
                     store.apply(try await store.client.snapshot())
-                } else if state == "agents" || state == "attention" {
+                } else if state == "agents" || state == "attention" || state == "error" {
                     store.apply(try PreviewData.snapshot(attention: state == "attention"))
+                    if state == "error" {
+                        store.actionError = "Cannot confirm the agent opened. Unexpected Herdr reply. Open it in your terminal."
+                    }
                 } else if state == "empty" {
                     store.apply(try PreviewData.empty())
                 } else if state == "offline" {

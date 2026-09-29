@@ -77,7 +77,7 @@ permissions, login registration, and the normal app instance unchanged.
    ```sh
    binary_dir="$(swift build -c release --show-bin-path)"
    preview_dir="$(mktemp -d)"
-   for state in agents attention empty offline loading; do
+   for state in agents attention error empty offline loading; do
        "$binary_dir/HerdrBar" --render-preview "$preview_dir/$state.png" --state "$state"
    done
    printf 'Inspect previews in %s\n' "$preview_dir"

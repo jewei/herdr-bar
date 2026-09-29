@@ -26,6 +26,39 @@ import Testing
 }
 
 @MainActor
+@Test func invalidFocusReplyCanBeDismissedWithoutClearingCompletion() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    var opened = false
+    var activated = false
+    store.onOpen = { opened = true }
+    store.activateTerminal = { _, _ in activated = true }
+    let completed = try snapshot([agent(status: "done", seq: 1)])
+    store.apply(completed)
+    let normalHeight = store.paletteHeight
+    store.open(try #require(store.rows.first))
+    await eventually { fake.pendingFocuses == 1 }
+    fake.answerFocus(error: HerdrError.invalidResponse)
+    await eventually { store.openingID == nil }
+
+    #expect(store.actionError?.contains("Open it in your terminal.") == true)
+    #expect(store.paletteHeight > normalHeight)
+    #expect(store.connected)
+    #expect(!opened)
+    #expect(!activated)
+    #expect(store.rows.first?.status == .done)
+
+    var heightAtDismissal: CGFloat?
+    store.onChange = { heightAtDismissal = store.paletteHeight }
+    store.dismissActionError()
+    #expect(store.actionError == nil)
+    #expect(heightAtDismissal == normalHeight)
+    store.apply(completed)
+    #expect(store.actionError == nil)
+    #expect(store.rows.first?.status == .done)
+}
+
+@MainActor
 @Test func openingAnAgentKeepsANewerCompletionVisible() async throws {
     let (store, fake, _) = makeStore()
     defer { store.stop(); fake.close() }
@@ -442,7 +475,7 @@ import Testing
     #expect(!activated)
     #expect(!opened)
     #expect(store.rows.first?.status == .done)
-    #expect(store.actionError == HerdrError.invalidResponse.localizedDescription)
+    #expect(store.actionError == "Cannot confirm the agent opened. Unexpected Herdr reply. Open it in your terminal.")
     #expect(fake.pendingSnapshots == 0)
 }
 

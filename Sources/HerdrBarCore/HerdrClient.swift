@@ -129,8 +129,9 @@ public struct HerdrClient: HerdrService {
         let snapshot: SessionSnapshot
     }
     private struct FocusResult: Decodable, Sendable {
-        enum Kind: String, Decodable, Sendable { case ok }
+        enum Kind: String, Decodable, Sendable { case agentInfo = "agent_info" }
         let type: Kind
+        let agent: AgentInfo
     }
     private struct StartResult: Decodable, Sendable {
         enum Kind: String, Decodable, Sendable { case started = "subscription_started" }
