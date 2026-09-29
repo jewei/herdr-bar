@@ -5,6 +5,28 @@ Each result applies to the recorded run or candidate. The
 [native release checklist](native-checklist.md) contains the procedure for future
 checks.
 
+## Release 1.0.2 preparation
+
+On 2026-09-29, source commit `a2ca44bf4546eb17b154a54fbb54e3daee3d8851`
+passed 118 debug tests and 118 release tests on macOS 27.0, build 26A428,
+on Apple Silicon with Swift 6.4. These included 38 store tests and 80 core tests.
+
+The new focus fixture reproduced `invalidResponse` before the fix. It passed
+after the client accepted Herdr's `agent_info` reply with agent details.
+The retained schema excerpts matched a fresh offline Herdr 0.9.1 export.
+Tests also checked dismissal without clearing unread completion state.
+
+The installed development build passed a snapshot check against the local
+Herdr 0.9.1 session. The error preview displayed the complete recovery message.
+These checks did not test a mouse click on the dismiss button or actual terminal
+activation through the corrected focus path.
+
+The full interactive checklist, VoiceOver, larger text, startup after logout
+and login, and macOS 14 execution were not repeated for this patch. The 1.0.1
+exclusions below remain specific to that release; these unperformed checks are
+not recorded as passed. The 1.0.2 release notes record the final source commit,
+CI run, archive checks, and distribution architecture.
+
 ## Release 1.0.1 check exclusions
 
 On 2026-09-28, the owner excluded these checks from release 1.0.1:
