@@ -5,6 +5,50 @@ Each result applies to the recorded run or candidate. The
 [native release checklist](native-checklist.md) contains the procedure for future
 checks.
 
+## Visual polish, 2026-10-03
+
+Two implementation agents improved the agent rows and recovery states. A separate
+review agent inspected the native images through four review passes. The final
+review found no blocking visual defect in the inspected states. This is a scoped
+visual result, not a claim of complete usability or accessibility verification.
+
+The palette now uses a graphite surface with a subtle light gradient, a clear
+header, compact status wells, and consistent control borders. Each row keeps its
+workspace name above the agent and tab details. Selection uses a quiet fill and
+border. Status labels remain visible when the connection fails, with neutral
+colors to show that the data is stored. Loading, opening, and retry use the same
+visible progress indicator. Retry controls keep their width during a request.
+
+The panel is 384 points wide. A six-row view is 540 points high. The compact
+540-point case keeps three complete rows, connection recovery, a bounded error
+message, and the footer visible. Long messages remain selectable and scrollable.
+Hover and press transitions are short. Reduce Motion disables those transitions
+and replaces the progress animation with a static hourglass. Increase Contrast
+raises the contrast of selection and control borders.
+
+| Check | Result |
+| --- | --- |
+| Native previews | Inspected agents, attention, error, empty, offline, loading, many, long names, opening, long error, cached offline, and compact. |
+| Recovery previews | Inspected retry in progress, retry failure, and successful recovery. |
+| Keyboard interaction | In an isolated native window, Up and Down changed selection. Return sent the test focus request and completed test terminal activation. Escape dismissed an error before closing the palette. |
+| Retry interaction | A click showed a disabled pending state. Failure restored the button. A later retry restored the agent list. |
+| Debug and release tests | Both configurations passed all 119 tests. |
+| App bundle | Release build, bundle metadata, arm64 executable, and ad hoc signature passed validation. |
+| Text checks | Format and diff whitespace checks passed. |
+| Calculated text contrast | Checked foreground, secondary, focus, and state colors on base, selected, hover, and tinted badge surfaces. The lowest ratio was 5.15:1. |
+
+The interaction check used a test service and temporary app preferences. It did
+not change a live Herdr session. Reduce Motion and Increase Contrast branches
+were checked in source; system accessibility settings were not changed. Hover
+and animation timing, VoiceOver, larger text, real terminal activation, and older
+macOS versions were not certified by these checks.
+
+- [Agent palette](palette.png)
+- [Attention states](polish/attention.png)
+- [Offline recovery](polish/offline.png)
+- [Compact error and recovery](polish/compact.png)
+- [Loading](polish/loading.png)
+
 ## Interface refinement, 2026-10-03
 
 The review covered the agent palette, status rows, sort control, settings menu,

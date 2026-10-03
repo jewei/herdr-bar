@@ -8,17 +8,36 @@ struct PaletteView: View {
     @FocusState private var hasKeyboardFocus: Bool
     @FocusState private var focusedRowID: String?
     @State private var retrying = false
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var sortHovered = false
+    @State private var settingsHovered = false
+    @State private var hasContentBelow = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            if !store.connected, !store.rows.isEmpty { offlineNotice }
-            if store.rows.isEmpty { emptyState } else { agentList }
-            if let error = store.actionError { errorNotice(error) }
+            if !store.connected, !store.rows.isEmpty {
+                PaletteOfflineNotice(retrying: retrying, connectionError: store.connectionError,
+                                     retry: refresh, editConnection: editConnection)
+            }
+            if store.rows.isEmpty {
+                PaletteEmptyState(loading: store.loading, connected: store.connected, retrying: retrying,
+                                  connectionError: store.connectionError, retry: refresh,
+                                  editConnection: editConnection)
+            } else { agentList }
+            if let error = store.actionError {
+                PaletteErrorNotice(message: error, dismiss: store.dismissActionError)
+            }
             footer
         }
         .frame(width: Theme.width)
-        .background(Theme.background)
+        .background {
+            Theme.background
+                .overlay(alignment: .top) {
+                    LinearGradient(colors: [.white.opacity(contrast == .increased ? 0 : 0.025), .clear],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+        }
         .foregroundStyle(Theme.foreground)
         .preferredColorScheme(.dark)
         .focusable()
@@ -49,15 +68,26 @@ struct PaletteView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("agents").font(Theme.header)
-            if !store.rows.isEmpty {
-                Text("\(store.rows.count)")
-                    .font(Theme.caption.monospacedDigit())
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("HERDR BAR")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(1.8)
                     .foregroundStyle(Theme.muted)
-                    .accessibilityLabel("\(store.rows.count) agents")
+                HStack(spacing: 8) {
+                    Text("Agents").font(Theme.header)
+                    if !store.rows.isEmpty {
+                        Text("\(store.rows.count)")
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                            .foregroundStyle(Theme.muted)
+                            .padding(.horizontal, 7)
+                            .frame(height: 20)
+                            .background(Theme.hover, in: Capsule())
+                            .accessibilityLabel("\(store.rows.count) agents")
+                    }
+                }
             }
-            Spacer()
+            Spacer(minLength: 8)
             Menu {
                 Picker("Sort agents", selection: $store.order) {
                     Text("Workspace").tag(AgentOrder.grouped)
@@ -67,24 +97,39 @@ struct PaletteView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 10, weight: .semibold))
                     Text(store.order == .grouped ? "Workspace" : "Attention")
+                        .font(.system(size: 11, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
                 }
-                .font(Theme.caption)
-                .foregroundStyle(Theme.muted)
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(Theme.hover, in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .font(Theme.caption)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Theme.muted)
             .fixedSize()
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(sortHovered ? Theme.selected : Theme.hover,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Theme.muted.opacity(contrast == .increased ? 0.65 : 0.14), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            .onHover { sortHovered = $0 }
             .help("Sort by workspace or show agents that need attention first")
             .accessibilityLabel("Sort agents")
             .accessibilityValue(store.order == .grouped ? "Workspace" : "Needs attention first")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
         .frame(height: Theme.headerHeight)
+        .overlay(alignment: .bottom) {
+            Theme.divider.opacity(contrast == .increased ? 1 : 0.55)
+                .frame(height: 1)
+                .padding(.horizontal, 20)
+        }
     }
 
     private var agentList: some View {
@@ -103,9 +148,28 @@ struct PaletteView: View {
                     }
                 }
                 .padding(Theme.listInset)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: AgentListBounds.self,
+                                               value: geometry.frame(in: .named("agentList")))
+                    }
+                }
             }
             .scrollIndicators(.automatic)
             .frame(height: store.listHeight)
+            .coordinateSpace(name: "agentList")
+            .onPreferenceChange(AgentListBounds.self) { bounds in
+                hasContentBelow = bounds.maxY - Theme.listInset > store.listHeight + 0.5
+            }
+            .mask {
+                let edge = min(0.2, 10 / store.listHeight)
+                LinearGradient(stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: edge),
+                    .init(color: .black, location: 1 - edge),
+                    .init(color: hasContentBelow ? .clear : .black, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+            }
             .defaultScrollAnchor(.top)
             .onAppear { if let id = store.selectedID { proxy.scrollTo(id) } }
             .onChange(of: store.selectedID) { _, id in
@@ -123,126 +187,47 @@ struct PaletteView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                if store.loading {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: store.connected ? "terminal" : "bolt.slash")
-                        .foregroundStyle(store.connected ? Theme.muted : Theme.blocked)
-                }
-                Text(store.loading ? "Connecting to Herdr" : store.connected ? "No agents yet" : "Herdr is offline")
-                    .font(Theme.body)
-            }
-            Text(store.loading ? "Reading agent status…" : store.connected
-                 ? "Start an agent in Herdr. It will appear here."
-                 : "Start Herdr in your terminal, or choose a different connection. We will retry automatically.")
-                .font(Theme.caption)
-                .foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            if !store.loading, !store.connected { recoveryActions }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-        .frame(height: Theme.emptyHeight)
-    }
-
-    private var offlineNotice: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Offline · showing last known status", systemImage: "bolt.slash")
-                .foregroundStyle(Theme.blocked)
-            recoveryActions
-        }
-        .font(Theme.caption)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .frame(height: Theme.offlineHeight)
-        .background(Theme.blocked.opacity(0.06))
-    }
-
-    private var recoveryActions: some View {
-        HStack(spacing: 8) {
-            Button(action: refresh) {
-                HStack(spacing: 6) {
-                    if retrying { ProgressView().controlSize(.mini) }
-                    Text(retrying ? "Connecting…" : "Retry connection")
-                }
-            }
-            .disabled(retrying)
-            .help(store.connectionError ?? "Connect to Herdr")
-            Button("Connection…", action: editConnection)
-        }
-        .font(Theme.caption)
-        .buttonStyle(QuietButtonStyle())
-    }
-
-    private func errorNotice(_ error: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .padding(.top, 3)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                ScrollView {
-                    Text(error)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                .help(error)
-                if Theme.errorNeedsScrolling(error) {
-                    Label("Scroll to read the full message", systemImage: "chevron.down")
-                        .font(.system(size: 11))
-                }
-            }
-            Button(action: store.dismissActionError) {
-                Image(systemName: "xmark").frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .help("Dismiss message (Esc)")
-            .accessibilityLabel("Dismiss message")
-        }
-        .font(Theme.caption)
-        .foregroundStyle(Theme.blocked)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(height: Theme.errorHeight(error))
-        .background(Theme.blocked.opacity(0.06))
-    }
-
     private var footer: some View {
         VStack(spacing: 0) {
-            Theme.divider.frame(height: 1)
+            Theme.divider.opacity(contrast == .increased ? 1 : 0.55).frame(height: 1)
             HStack(spacing: 8) {
                 Text(store.connected
-                     ? (store.summary.description.isEmpty ? "Waiting for agents" : store.summary.description)
-                     : store.loading ? "Connecting to Herdr…" : "Offline · retrying automatically")
+                     ? (store.summary.description.isEmpty ? "No active agents" : store.summary.description)
+                     : store.loading ? "Connecting to Herdr…" : "Automatic retry is on")
+                    .font(.system(size: 11, weight: .medium))
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .help(store.connected ? store.summary.description : store.connectionError ?? "")
                 settings
             }
-            .frame(height: 37)
-            HStack(spacing: 12) {
+            .frame(height: 36)
+            HStack(spacing: 10) {
                 if store.connected, !store.rows.isEmpty {
                     keyboardHint("↑↓", "Select")
                     keyboardHint("↵", store.openingID == nil ? "Open" : "Opening…")
                 }
                 keyboardHint("esc", store.actionError == nil ? "Close" : "Dismiss")
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
                 if store.connected {
-                    Text(store.transportMode)
-                        .help(store.diagnostics)
-                        .accessibilityLabel("Connection: \(store.diagnostics)")
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(store.eventsLive ? Theme.idle : Theme.muted)
+                            .frame(width: 4, height: 4)
+                        Text(store.transportMode)
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .help(store.diagnostics)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Connection: \(store.diagnostics)")
                 }
             }
-            .frame(height: 30)
+            .frame(height: 24)
             Spacer(minLength: 0)
         }
-        .font(Theme.caption)
         .foregroundStyle(Theme.muted)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
         .frame(height: Theme.footerHeight)
+        .background(.black.opacity(0.08))
     }
 
     private func keyboardHint(_ key: String, _ label: String) -> some View {
@@ -251,8 +236,12 @@ struct PaletteView: View {
                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                 .padding(.horizontal, 4)
                 .frame(height: 17)
-                .background(Theme.hover, in: RoundedRectangle(cornerRadius: 3))
-            Text(label).font(.system(size: 11))
+                .background(Theme.hover, in: RoundedRectangle(cornerRadius: 4))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Theme.muted.opacity(contrast == .increased ? 0.65 : 0.16), lineWidth: 0.5)
+                }
+            Text(label).font(.system(size: 10))
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(key == "↑↓" ? "Up and Down arrows" : key == "↵" ? "Return" : "Escape"): \(label)")
@@ -301,115 +290,17 @@ struct PaletteView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .background(settingsHovered ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 7))
+        .onHover { settingsHovered = $0 }
         .help("Settings")
         .accessibilityLabel("Herdr Bar settings")
     }
 }
 
-struct AgentRowView: View {
-    let row: AgentRow
-    let selected: Bool
-    let opening: Bool
-    let available: Bool
-    let action: () -> Void
-    @State private var hovered = false
+private struct AgentListBounds: PreferenceKey {
+    static let defaultValue = CGRect.zero
 
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                StatusMark(status: available ? row.status : .unknown)
-                    .frame(width: 12)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text(row.workspace)
-                            .font(Theme.body)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(row.tab)
-                            .font(Theme.caption.monospaced())
-                            .foregroundStyle(Theme.muted)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: 110, alignment: .trailing)
-                    }
-                    HStack(spacing: 6) {
-                        Text(row.kind).foregroundStyle(Theme.muted)
-                        Spacer(minLength: 2)
-                        Text(opening ? "Opening…" : row.status.label)
-                            .foregroundStyle(available ? Theme.color(for: row.status) : Theme.muted)
-                    }
-                    .font(Theme.caption)
-                }
-                .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .frame(height: Theme.rowHeight)
-            .background(selected ? Theme.selected : hovered ? Theme.hover : .clear,
-                        in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
-            .overlay(alignment: .leading) {
-                if selected {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Theme.focus)
-                        .frame(width: 2, height: 24)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: Theme.cornerRadius))
-        }
-        .buttonStyle(RowButtonStyle())
-        .onHover { hovered = $0 }
-        .help("\(row.title)\n\(row.status.label) · \(row.detail)\n\(available ? "Open in Herdr" : "Last known status. Reconnect to open.")")
-        .accessibilityLabel("\(row.workspace), tab \(row.tab), \(row.kind), \(available ? "" : "Last known status: ")\(row.status.label)")
-        .accessibilityValue(opening ? "Opening" : selected ? "Selected" : "")
-        .accessibilityHint(available ? "Open this agent in Herdr" : "Herdr is offline")
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
-    }
-}
-
-struct StatusMark: View {
-    let status: AgentStatus
-
-    var body: some View {
-        Group {
-            switch status {
-            case .idle:
-                Circle().strokeBorder(Theme.idle, lineWidth: 1).frame(width: 7, height: 7)
-            case .working:
-                Circle().fill(Theme.running).frame(width: 7, height: 7)
-            case .blocked:
-                Image(systemName: "exclamationmark").font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Theme.blocked)
-            case .done:
-                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Theme.done)
-            case .unknown:
-                Image(systemName: "questionmark").font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Theme.unknown)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-private struct RowButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.cornerRadius)
-                    .fill(configuration.isPressed ? Theme.focus.opacity(0.12) : .clear)
-            }
-    }
-}
-
-private struct QuietButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(isEnabled ? Theme.foreground : Theme.muted)
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .background(configuration.isPressed ? Theme.selected : Theme.hover,
-                        in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
-            .contentShape(Rectangle())
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }
