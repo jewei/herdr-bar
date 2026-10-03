@@ -17,6 +17,7 @@ final class AgentStore: ObservableObject {
     @Published var actionError: String?
     @Published var openingID: String?
     @Published var selectedID: String?
+    @Published var maximumPaletteHeight = Theme.maximumPaletteHeight
     @Published var order: AgentOrder {
         didSet { defaults.set(order.rawValue, forKey: "agentOrder") }
     }
@@ -89,9 +90,17 @@ final class AgentStore: ObservableObject {
         if let error = lastEventError { text += "\nEvent stream: \(error)" }
         return text
     }
+    private var paletteChromeHeight: CGFloat {
+        let offline = !connected && !rows.isEmpty ? Theme.offlineHeight : 0
+        return Theme.headerHeight + Theme.footerHeight + offline
+            + (actionError.map(Theme.errorHeight) ?? 0)
+    }
+    var listHeight: CGFloat {
+        min(Theme.listHeight(count: rows.count),
+            max(Theme.rowHeight + Theme.listInset * 2, maximumPaletteHeight - paletteChromeHeight))
+    }
     var paletteHeight: CGFloat {
-        let list = rows.isEmpty ? 144 : min(CGFloat(rows.count) * Theme.rowHeight + 8, Theme.maximumListHeight)
-        return 40 + list + 42 + (actionError == nil ? 0 : 66)
+        paletteChromeHeight + (rows.isEmpty ? Theme.emptyHeight : listHeight)
     }
 
     func start() {

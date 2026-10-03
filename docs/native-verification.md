@@ -5,6 +5,63 @@ Each result applies to the recorded run or candidate. The
 [native release checklist](native-checklist.md) contains the procedure for future
 checks.
 
+## Interface refinement, 2026-10-03
+
+The review covered the agent palette, status rows, sort control, settings menu,
+connection recovery, keyboard commands, and error states. The implementation
+keeps SwiftUI, AppKit, the existing colors, monospaced agent names, brand assets,
+and agent-opening behavior. No dependency was added.
+
+The baseline passed 118 debug tests. Six native preview states were captured.
+The attention preview showed a truncated footer summary. Source review also
+found hidden idle labels, three-line error truncation, and no scroll update on
+initial selection or sorting. The wider layout and revised spacing are design
+choices. Their effect on user satisfaction has not been measured.
+
+| Priority | Problem and change | Acceptance check |
+| --- | --- | --- |
+| 1 | Crowded rows and footer: separate workspace and tab names, show all status labels, give the summary its own line. | Normal and long-name previews keep controls visible; the five-status summary fits in two lines. |
+| 1 | Selection can be out of view: scroll on initial display, order changes, and list height changes. | The selected last row in an 18-row list is visible. Up, Down, and Return still work. |
+| 1 | Recovery is hard to find: add connection controls to offline states and mark cached rows as last known status. | Offline rows cannot open; retry and connection controls remain visible. |
+| 2 | Long errors hide instructions: use a bounded scroll area, selectable text, and a scroll hint. | The error area does not push controls outside the panel. Escape dismisses the error first. |
+| 2 | Combined notices make the panel too tall: reduce list height to fit the screen. | Cached rows, a long error, and all recovery controls fit within a 540-point budget. |
+
+Three bounded review passes were completed, with an independent reviewer.
+The final debug and release suites each passed 119 tests on macOS 27.0.1,
+Apple Silicon. The new test covers combined notices, the height budget, and
+restoration of list height after recovery. The release app bundle, its ad hoc
+signature, text format, and diff whitespace checks passed.
+
+Twelve native preview states were rendered and inspected: agents, attention,
+error, empty, offline, loading, many, long names, opening, long error, cached
+offline, and compact. A temporary native window hosted the actual palette with
+an isolated test service and preferences. Up and Down changed the selected row.
+Return sent the focus request, called the test terminal activation, and completed
+the open action. Escape dismissed an error, then called the close action.
+Sorting retained the selected row in view.
+The retry button was clicked in the test window. It showed a disabled
+`Connecting…` state during a delayed request, then became available after failure.
+A second retry restored the agent list after the test service recovered.
+
+The minimum calculated contrast for foreground, secondary, and status colors
+against the base, selected, and hover surfaces was 4.67:1. Full keyboard access
+was off in the test environment; Tab and Shift-Tab kept focus in the palette.
+Full control traversal, VoiceOver speech, larger text, real terminal activation,
+notification delivery, login registration, and macOS 14 execution were not
+retested. No live Herdr session or system keyboard setting was changed.
+
+The captures use the same attention fixture at each version's native width:
+300 points before and 360 points after. The panel remains fixed in width; its
+list height adapts to available screen space.
+
+- [Before: attention](refinement/before-attention.png)
+- [After: attention](refinement/after-attention.png)
+- [Offline recovery](refinement/offline.png)
+- [Combined states at 540 points](refinement/compact.png)
+
+Build and run commands are unchanged. The [preview guide](development.md#render-the-previews)
+lists the additional edge cases.
+
 ## Release 1.0.3 preparation
 
 On 2026-09-29, source commit `24c130abce100ff5f65846224c731ee127534c86`

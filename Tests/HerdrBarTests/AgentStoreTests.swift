@@ -721,6 +721,33 @@ import Testing
     #expect(sleeps.withLock { $0.last! <= .seconds(2) })
 }
 
+@MainActor
+@Test func noticesKeepThePaletteWithinTheScreenBudget() async throws {
+    let (store, fake, _) = makeStore()
+    defer { store.stop(); fake.close() }
+    store.maximumPaletteHeight = 540
+    store.apply(try PreviewData.snapshot(extended: true))
+    let normalHeight = store.paletteHeight
+    let normalListHeight = store.listHeight
+    store.actionError = String(repeating: "The terminal is unavailable. ", count: 40)
+    let refresh = Task { await store.refresh() }
+    await eventually { fake.pendingSnapshots == 1 }
+    fake.failSnapshot()
+    await refresh.value
+
+    #expect(!store.connected)
+    #expect(store.rows.count == 18)
+    #expect(store.paletteHeight <= 540)
+    #expect(store.listHeight >= Theme.rowHeight)
+    #expect(store.listHeight < normalListHeight)
+    #expect(Theme.errorNeedsScrolling(try #require(store.actionError)))
+
+    store.dismissActionError()
+    store.apply(try PreviewData.snapshot(extended: true))
+    #expect(store.paletteHeight == normalHeight)
+    #expect(store.listHeight == normalListHeight)
+}
+
 // MARK: - Helpers
 
 @MainActor

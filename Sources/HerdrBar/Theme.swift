@@ -1,7 +1,3 @@
-// Hallmark · component: agent palette · theme: user screenshot · genre: modern-minimal
-// Pre-emit critique: Philosophy 5, Hierarchy 4, Execution 4, Specificity 5, Restraint 5, Variety 4.
-// Native controls provide hover, focus, press, and disabled states. The palette handles loading,
-// connection errors, and successful updates. A fixed-width font follows the supplied terminal UI.
 import AppKit
 import SwiftUI
 import HerdrBarCore
@@ -20,12 +16,40 @@ enum Theme {
     static let done = Color(hex: 0x87c7ff)
     static let unknown = Color(hex: 0xa2acbb)
 
-    static let width: CGFloat = 300
-    static let rowHeight: CGFloat = 48
-    static let maximumListHeight: CGFloat = 480
+    static let width: CGFloat = 360
+    static let rowHeight: CGFloat = 56
+    static let rowSpacing: CGFloat = 2
+    static let listInset: CGFloat = 8
+    static let headerHeight: CGFloat = 52
+    static let footerHeight: CGFloat = 74
+    static let emptyHeight: CGFloat = 180
+    static let offlineHeight: CGFloat = 78
+    static let maximumListHeight: CGFloat = 360
+    static let maximumPaletteHeight: CGFloat = 640
+    static let cornerRadius: CGFloat = 6
     static let body = Font.system(size: 13, weight: .medium, design: .monospaced)
-    static let caption = Font.system(size: 11, weight: .regular, design: .monospaced)
-    static let header = Font.system(size: 12, weight: .semibold, design: .monospaced)
+    static let caption = Font.system(size: 12)
+    static let header = Font.system(size: 14, weight: .semibold, design: .monospaced)
+
+    static func listHeight(count: Int) -> CGFloat {
+        min(CGFloat(count) * (rowHeight + rowSpacing) - rowSpacing + listInset * 2, maximumListHeight)
+    }
+
+    static func errorHeight(_ message: String) -> CGFloat {
+        min(150, max(64, errorTextHeight(message) + 28))
+    }
+
+    static func errorNeedsScrolling(_ message: String) -> Bool {
+        errorTextHeight(message) + 28 > 150
+    }
+
+    private static func errorTextHeight(_ message: String) -> CGFloat {
+        let bounds = (message as NSString).boundingRect(
+            with: NSSize(width: width - 90, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: NSFont.systemFont(ofSize: 12)])
+        return ceil(bounds.height)
+    }
 
     static func color(for status: AgentStatus) -> Color {
         switch status {

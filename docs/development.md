@@ -85,6 +85,12 @@ permissions, login registration, and the normal app instance unchanged.
 
 3. Inspect each PNG in the printed directory.
 
+For layout edge cases, use `--state many`, `long-names`, `opening`, `long-error`,
+`cached-offline`, or `compact`. The `many` state selects the last of 18 agents.
+The `compact` state combines cached offline data and a long error within a
+540-point height limit. These are static previews. They do not test keyboard
+focus, terminal activation, or retry timing.
+
 ## Update the app icon
 
 The source of the app icon is a canvas drawing in `design/app-icon.html`.

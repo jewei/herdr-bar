@@ -124,6 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     }
 
     private func updatePopoverSize() {
+        if let screen = statusItem?.button?.window?.screen ?? NSScreen.main {
+            let height = min(Theme.maximumPaletteHeight, screen.visibleFrame.height - 32)
+            if store.maximumPaletteHeight != height { store.maximumPaletteHeight = height }
+        }
         let size = NSSize(width: Theme.width, height: store.paletteHeight)
         if popover.contentSize != size { popover.contentSize = size }
     }
@@ -229,17 +233,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
             do {
                 if live {
                     store.apply(try await store.client.snapshot())
-                } else if state == "agents" || state == "attention" || state == "error" {
-                    store.apply(try PreviewData.snapshot(attention: state == "attention"))
-                    if state == "error" {
+                } else if ["agents", "attention", "error", "long-error", "many", "long-names", "opening"].contains(state) {
+                    store.apply(try PreviewData.snapshot(attention: state == "attention" || state == "long-names",
+                                                         extended: state == "many" || state == "long-names"))
+                    if state == "error" || state == "long-error" {
                         store.actionError = "Cannot confirm the agent opened. Unexpected Herdr reply. Open it in your terminal."
+                        if state == "long-error" {
+                            store.actionError = String(repeating: "The terminal could not open this agent. ", count: 20)
+                                + "Open Herdr in your terminal, then select the agent again."
+                        }
                     }
+                    if state == "opening" { store.openingID = store.selectedID }
                 } else if state == "empty" {
                     store.apply(try PreviewData.empty())
-                } else if state == "offline" {
+                } else if ["offline", "cached-offline", "compact"].contains(state) {
                     // Let the normal error path build an offline view using a missing socket.
                     let offline = AgentStore(client: HerdrClient(socketPath: "/tmp/herdr-bar-preview-missing.sock"))
+                    if state != "offline" {
+                        offline.isPreview = true
+                        offline.apply(try PreviewData.snapshot(attention: true, extended: state == "compact"))
+                        offline.isPreview = false
+                    }
                     await offline.refresh()
+                    if state == "compact" {
+                        offline.maximumPaletteHeight = 540
+                        offline.actionError = String(repeating: "The terminal could not open this agent. ", count: 20)
+                    }
                     render(view: PaletteView(store: offline, close: {}, editConnection: {}),
                            height: offline.paletteHeight, path: path)
                     return
