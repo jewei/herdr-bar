@@ -136,43 +136,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         if popover.isShown { updatePopoverSize() }
         guard let button = statusItem?.button else { return }
         let summary = store.summary
-        let symbol: String
-        let tint: NSColor
-        var title = ""
-        if !store.connected {
-            symbol = store.loading ? "ellipsis.circle" : "bolt.slash.circle"
-            tint = .secondaryLabelColor
-        } else if summary.attention > 0 {
-            symbol = summary.blocked > 0 ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
-            tint = summary.blocked > 0 ? .systemOrange : .systemBlue
-            title = " \(summary.attention)"
-            if summary.running > 0 { title += " · \(summary.running)↻" }
-        } else if summary.running > 0 {
-            symbol = "circle.inset.filled"
-            tint = .systemYellow
-            title = " \(summary.running)"
-        } else if summary.unknown > 0 {
-            symbol = "questionmark.circle"
-            tint = .secondaryLabelColor
-            title = " \(summary.unknown)"
-        } else {
-            symbol = "circle"
-            tint = .labelColor
-        }
-        let text = store.connected ? (summary.description.isEmpty ? "No agents" : summary.description)
-            : store.loading ? "Connecting to Herdr" : "Herdr is offline"
-        let presentation = StatusPresentation(symbol: symbol, tint: tint, title: title, text: text)
+        let presentation = StatusPresentation(summary: summary, connected: store.connected, loading: store.loading)
         guard presentation != statusPresentation else { return }
         statusPresentation = presentation
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Herdr Bar")?
-            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))?
-            .withSymbolConfiguration(.init(paletteColors: [tint]))
-        image?.isTemplate = false
-        button.image = image
-        button.title = title
-        button.imagePosition = .imageLeading
-        button.toolTip = "Herdr Bar · \(text)"
-        button.setAccessibilityLabel("Herdr Bar. \(text). Show agents.")
+        button.image = nil
+        button.attributedTitle = presentation.attributedTitle
+        button.toolTip = "Herdr Bar · \(presentation.text)"
+        button.setAccessibilityLabel("Herdr Bar. \(presentation.text). Show agents.")
     }
 
     private func editConnection() {
@@ -212,14 +182,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
                                             willPresent notification: UNNotification,
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
-    }
-
-    /// The menu bar item's current content. The item changes only when this value changes.
-    private struct StatusPresentation: Equatable {
-        let symbol: String
-        let tint: NSColor
-        let title: String
-        let text: String
     }
 
     private func argument(_ name: String, in arguments: [String]) -> String? {
