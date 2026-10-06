@@ -1,8 +1,53 @@
+import AppKit
 import Foundation
 import HerdrBarCore
 import os
 import Testing
 @testable import HerdrBar
+
+@MainActor
+@Test func menuBarShowsSeparateStatusGroups() throws {
+    var tracker = AttentionTracker()
+    let states = ["blocked", "blocked", "working", "done", "done", "done", "idle"]
+    let rows = tracker.update(try snapshot(states.enumerated().map {
+        agent("w1:p\($0.offset)", status: $0.element, seq: 1, terminal: "term\($0.offset)")
+    }))
+    let presentation = StatusPresentation(summary: AgentSummary(rows: rows), connected: true, loading: false)
+    #expect(presentation.groups.map(\.count) == [2, 1, 3])
+    #expect(presentation.groups.map(\.symbol) == [
+        "exclamationmark.circle", "circle.inset.filled", "checkmark.circle",
+    ])
+    #expect(presentation.groups.map(\.tint) == [.systemOrange, .systemYellow, .systemBlue])
+    let title = presentation.attributedTitle
+    #expect(title.string == "\u{fffc} 2  \u{fffc} 1  \u{fffc} 3")
+    var images = 0
+    title.enumerateAttribute(.attachment, in: NSRange(location: 0, length: title.length)) { value, _, _ in
+        if let attachment = value as? NSTextAttachment {
+            #expect(attachment.image != nil)
+            #expect(attachment.bounds.width > 0)
+            images += 1
+        }
+    }
+    #expect(images == 3)
+}
+
+@MainActor
+@Test func menuBarHidesZeroCountsAndPreservesConnectionStates() throws {
+    var tracker = AttentionTracker()
+    let rows = tracker.update(try snapshot([agent(status: "working", seq: 1)]))
+    let summary = AgentSummary(rows: rows)
+    let running = StatusPresentation(summary: summary, connected: true, loading: false)
+    #expect(running.groups.map(\.count) == [1])
+    #expect(running.groups.first?.tint == .systemYellow)
+    let empty = StatusPresentation(summary: AgentSummary(rows: []), connected: true, loading: false)
+    #expect(empty.groups.map(\.symbol) == ["circle"])
+    #expect(empty.groups.first?.count == nil)
+    for loading in [false, true] {
+        let offline = StatusPresentation(summary: summary, connected: false, loading: loading)
+        #expect(offline.groups.map(\.symbol) == [loading ? "ellipsis.circle" : "bolt.slash.circle"])
+        #expect(offline.groups.first?.count == nil)
+    }
+}
 
 @MainActor
 @Test func openingAnAgentAcknowledgesItsCompletion() async throws {
