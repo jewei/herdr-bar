@@ -16,8 +16,11 @@ credentials.
 1. Set the three-part marketing version in `Resources/Info.plist`.
 2. Increase the positive integer build number in the same file.
    The number must exceed the last reachable release's build number.
-3. Commit all source changes.
-4. Check that CI passes for this commit.
+3. Update [CHANGELOG.md](../CHANGELOG.md). Move the Unreleased changes into a
+   section with the version and release date. Keep an empty Unreleased section
+   for future changes. Use the version entry as the basis for GitHub release notes.
+4. Commit all source changes.
+5. Check that CI passes for this commit.
 
 If the release tag already exists, check that it points to this source commit.
 The tag must match the bundle version.

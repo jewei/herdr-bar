@@ -60,6 +60,8 @@ settings, connection failures, terminal selection, and notifications.
 
 ## Development and release
 
+See the [changelog](CHANGELOG.md) for changes in each release.
+
 CI selects Xcode 16.4 on macOS 15. It checks text format and shell syntax,
 runs debug and release tests, and tests release scripts with mock Apple services.
 CI also builds and validates an app bundle. macOS 14 is the deployment target.
